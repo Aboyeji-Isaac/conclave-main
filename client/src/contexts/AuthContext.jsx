@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { isDevAuthBypass, previewUser } from "../config/devPreview";
 import * as authService from "../services/auth.service";
+import { deleteAccount as deleteAccountRequest, updateProfile as updateProfileRequest } from "../services/users.service";
 const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(isDevAuthBypass ? previewUser : null);
@@ -57,6 +58,22 @@ export function AuthProvider({ children }) {
     await authService.logout();
     setUser(null);
   }
+  // Editing the profile has to land here, not only on the Profile page. The rail
+  // footer and the navbar both read `user`, so a rename saved from the form would
+  // otherwise show the old name everywhere until a reload — and the screen that
+  // just told you it saved would be the one place it had not.
+  async function updateProfile(updates) {
+    const next = await updateProfileRequest(updates);
+    setUser((prev) => ({ ...prev, ...next }));
+    return next;
+  }
+  // The server already killed every session and dropped every membership, so the
+  // local session has to go too — leaving it in place would render a shell that
+  // 401s on every request until the next reload.
+  async function deleteAccount() {
+    await deleteAccountRequest();
+    setUser(null);
+  }
   const value = useMemo(
     () => ({
       user,
@@ -65,6 +82,8 @@ export function AuthProvider({ children }) {
       login,
       register,
       logout,
+      updateProfile,
+      deleteAccount,
     }),
     [user, isLoading],
   );

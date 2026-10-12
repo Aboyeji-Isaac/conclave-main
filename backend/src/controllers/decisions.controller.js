@@ -2,6 +2,12 @@ const { query } = require('../config/db');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const ApiError = require('../utils/ApiError');
+const {
+  attachPins,
+  getDecisionPayload,
+  pinDecision,
+  unpinDecision,
+} = require('../services/decisionPin.service');
 
 // The Decisions Layer — promote any message to a tagged, searchable
 // Decision stored outside the chat timeline. This is one of the three
@@ -47,7 +53,12 @@ const promoteToDecision = asyncHandler(async (req, res) => {
     [roomId, sourceMessageId || null, title, body, tags || [], req.user.id],
   );
 
-  return ok(res, result.rows[0], 201);
+  // Pins attached so a freshly promoted decision has the same shape as one
+  // read from the list — both are `{ ..., pins: { room, mine } }`, and an empty
+  // new decision still carries the keys rather than missing them.
+  const [decision] = await attachPins(result.rows, req.user.id);
+
+  return ok(res, decision, 201);
 });
 
 // ---------- listDecisions ----------
@@ -56,7 +67,13 @@ const promoteToDecision = asyncHandler(async (req, res) => {
 const listDecisions = asyncHandler(async (req, res) => {
   const { roomId, before } = req.query;
 
-  const params = [req.user.id];
+  // $1 is the room filter OR the caller, never both. Pushing the caller in
+  // single-room mode left an unreferenced $1 in the parameter list, and
+  // Postgres then cannot infer its type (42P18, "could not determine data type
+  // of parameter $1") — which is why GET /decisions/room/:roomId has been a 500
+  // since the route was added. Every later parameter is numbered off the
+  // array, so the index maths below stays correct either way.
+  let params;
   let scope;
 
   if (roomId) {
@@ -68,9 +85,10 @@ const listDecisions = asyncHandler(async (req, res) => {
     if (membership.rows.length === 0) {
       throw new ApiError(403, 'You are not a member of this room');
     }
-    params.push(roomId);
-    scope = `d.room_id = $${params.length}`;
+    params = [roomId];
+    scope = `d.room_id = $1`;
   } else {
+    params = [req.user.id];
     scope = `d.room_id IN (SELECT room_id FROM room_members WHERE user_id = $1)`;
   }
 
@@ -106,7 +124,7 @@ const listDecisions = asyncHandler(async (req, res) => {
 
   // Cursor so older decisions stay reachable; a bare LIMIT 50 stranded them.
   // Only returned on a full page, so a short final page ends the walk.
-  const decisions = result.rows;
+  const decisions = await attachPins(result.rows, req.user.id);
   let nextCursor = null;
   if (decisions.length === PAGE_SIZE) {
     const last = decisions[decisions.length - 1];
@@ -144,7 +162,9 @@ const searchDecisions = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Search query (q) is required');
   }
 
-  const params = [req.user.id];
+  // Same parameter-numbering rule as listDecisions above: $1 is the room or
+  // the caller, never an unreferenced placeholder.
+  let params;
   let scope;
 
   if (roomId) {
@@ -155,9 +175,10 @@ const searchDecisions = asyncHandler(async (req, res) => {
     if (membership.rows.length === 0) {
       throw new ApiError(403, 'You are not a member of this room');
     }
-    params.push(roomId);
-    scope = `d.room_id = $${params.length}`;
+    params = [roomId];
+    scope = `d.room_id = $1`;
   } else {
+    params = [req.user.id];
     scope = `d.room_id IN (SELECT room_id FROM room_members WHERE user_id = $1)`;
   }
 
@@ -187,7 +208,88 @@ const searchDecisions = asyncHandler(async (req, res) => {
     params,
   );
 
-  return ok(res, { decisions: result.rows, query: q.trim() });
+  return ok(res, {
+    decisions: await attachPins(result.rows, req.user.id),
+    query: q.trim(),
+  });
 });
 
-module.exports = { promoteToDecision, listDecisions, searchDecisions };
+// ---------- getDecision ----------
+// GET /decisions/:decisionId
+//
+// One decision, in the same joined shape the list and search endpoints return,
+// pins attached. Exists so the pinned strip under a room header can resolve to
+// the decision itself rather than to the board and leave the reader hunting.
+//
+// Membership is checked here rather than trusted to getDecisionPayload: that
+// service is shared with the pin path, where the caller has already been
+// authorised against the room, and adding a check inside it would cost an extra
+// query on every pin. Here there is no prior check, so it is this handler's job.
+const getDecision = asyncHandler(async (req, res) => {
+  const { decisionId } = req.params;
+
+  const membership = await query(
+    `SELECT 1 FROM room_members
+      WHERE room_id = (SELECT room_id FROM decisions WHERE id = $1)
+        AND user_id = $2`,
+    [decisionId, req.user.id],
+  );
+  // An unknown decision and one in a room you are not in are both a 403: the
+  // membership subquery returns no row either way, and distinguishing them
+  // would confirm a UUID exists to someone who cannot see it.
+  if (membership.rows.length === 0) {
+    throw new ApiError(403, 'You are not a member of this room');
+  }
+
+  const decision = await getDecisionPayload(decisionId, req.user.id);
+  return ok(res, decision);
+});
+
+// ---------- pinDecisionHandler ----------
+// PUT /decisions/:decisionId/pin { scope }
+//
+// Any room member may pin, in either scope. The distinction is not privilege
+// but blast radius: a 'user' pin changes nothing for anyone else, a 'room' pin
+// changes what every member sees.
+const pinDecisionHandler = asyncHandler(async (req, res) => {
+  const { decisionId } = req.params;
+  const scope = (req.body || {}).scope;
+
+  const decision = await pinDecision({
+    decisionId,
+    userId: req.user.id,
+    scope,
+    io: req.app.get('io'),
+  });
+
+  return ok(res, decision);
+});
+
+// ---------- unpinDecisionHandler ----------
+// DELETE /decisions/:decisionId/pin/:scope
+//
+// A personal pin has one owner. A room pin may be removed by its author or by
+// a room admin, so a pin stranded by a member who left does not stick forever.
+const unpinDecisionHandler = asyncHandler(async (req, res) => {
+  const { decisionId, scope } = req.params;
+
+  const decision = await unpinDecision({
+    decisionId,
+    userId: req.user.id,
+    scope,
+    io: req.app.get('io'),
+  });
+
+  // Removing an absent pin succeeds with no pin to report, matching
+  // removeReaction — a 404 would turn a retried request into a visible failure.
+  return ok(res, decision || { decisionId, scope, unpinned: false });
+});
+
+module.exports = {
+  promoteToDecision,
+  listDecisions,
+  searchDecisions,
+  getDecision,
+  pinDecision: pinDecisionHandler,
+  unpinDecision: unpinDecisionHandler,
+};

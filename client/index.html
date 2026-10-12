@@ -1,2 +1,116 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="description" content="Conclave private collaboration platform" /><title>Conclave</title></head><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Conclave</title>
+    <meta
+      name="description"
+      content="Private team messaging with decisions, action items and a catch-up digest, so the important part does not disappear into the scroll."
+    />
+    <!--
+      Browser chrome colour. Mirrors --color-canvas in src/index.css.
+
+      These follow the OS preference only, not the manual override: a meta tag
+      is parsed before any script can read localStorage, so a user who has set
+      dark while their system is light will see the wrong chrome colour. That
+      is a known, deliberate trade — the alternative is injecting the tag from
+      JavaScript, which loses it for the first paint on every reload.
+    -->
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
+
+    <!--
+      Icons. The SVG first so modern browsers take the vector; the 32px PNG is
+      the fallback for anything that will not render SVG, and apple-touch-icon
+      is what iOS puts on the home screen — it needs an opaque PNG, because iOS
+      composites alpha onto black.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <!--
+      Sharing metadata. og:image is an ABSOLUTE url: scrapers resolve it from
+      the document's own url, so a relative path resolves against whatever page
+      the card is generated from and silently fails. Both are generated from
+      src/assets/brand/logo.svg into public/.
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Conclave" />
+    <meta property="og:url" content="https://conclave-main.vercel.app" />
+    <meta property="og:title" content="Conclave" />
+    <meta
+      property="og:description"
+      content="Private team messaging with decisions, action items and a catch-up digest, so the important part does not disappear into the scroll."
+    />
+    <meta property="og:image" content="https://conclave-main.vercel.app/og.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Conclave — private team messaging with decisions, action items and a catch-up digest"
+    />
+    <meta property="og:locale" content="en_US" />
+    <!-- large_image, not summary: there is a 1200x630 card to show now, and
+         summary would crop it to a small thumbnail. -->
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!--
+      Set the theme class before anything paints. This has to come BEFORE every
+      stylesheet link, including the font sheet below — a render-blocking
+      stylesheet stalls the parser, so a script placed after one runs late and
+      the light palette is already on screen. That is the whole reason this sits
+      above the font tags rather than at the end of head as it used to.
+
+      Three states: an explicit stored choice, otherwise the system preference,
+      otherwise light — which is what src/index.css declares. A failure here
+      (private mode, storage disabled) is not worth surfacing; falling back to
+      light is correct.
+
+      The key and the three values are the contract with ThemeContext.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('conclave-theme');
+          var dark =
+            stored === 'dark' ||
+            (stored !== 'light' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+        } catch (e) {
+          /* storage unavailable: stay on the light default */
+        }
+      })();
+    </script>
+
+    <!--
+      Fonts. Both faces load for the whole app rather than Instrument Serif
+      being injected by the landing route only: it is a single weight, and
+      loading it on demand would make the one page whose first impression
+      matters most flash from a fallback to the real face.
+
+      Inter Tight is the app face (src/index.css --font-sans). It was referenced
+      in the font stack from the start but never actually loaded, so every screen
+      so far has been rendering in the system UI font.
+
+      Instrument Serif is landing headings only, paired against Inter Tight.
+
+      preconnect to both origins: the stylesheet and the font binaries live on
+      different hosts, and without the handshake each request pays a fresh TLS
+      negotiation before the first paint that needs text.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

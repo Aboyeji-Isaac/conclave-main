@@ -117,6 +117,47 @@ const listUsers = asyncHandler(async (req, res) => {
   });
 });
 
+// ---------- searchUsers ----------
+// A picker-safe subset of listUsers, for the "start a conversation" and
+// "add a member" screens.
+//
+// listUsers returns `email` to every authenticated caller, which is defensible
+// for an admin directory and wrong for a people picker: a compose box would
+// hand every user's email address to anyone who can type a name. This endpoint
+// exists so those two screens have a path that cannot leak one.
+//
+// Email is still searchable — you can type an address and find the person it
+// belongs to — it is just never returned.
+const searchUsers = asyncHandler(async (req, res) => {
+  const { q, page = '1' } = req.query;
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const offset = (pageNum - 1) * PAGE_SIZE;
+
+  // An empty query would return the whole directory, which is not a search.
+  // "Recent" is a different screen with a different answer; this one answers
+  // "find someone I have a name for".
+  if (!q || !q.trim()) {
+    return ok(res, { users: [], page: pageNum, pageSize: PAGE_SIZE, hasMore: false });
+  }
+
+  const result = await query(
+    `SELECT id, display_name, avatar_url
+     FROM users
+     WHERE deleted_at IS NULL
+       AND (display_name ILIKE $1 OR email ILIKE $1)
+     ORDER BY display_name ASC
+     LIMIT $2 OFFSET $3`,
+    [`%${q.trim()}%`, PAGE_SIZE, offset]
+  );
+
+  return ok(res, {
+    users: result.rows,
+    page: pageNum,
+    pageSize: PAGE_SIZE,
+    hasMore: result.rows.length === PAGE_SIZE,
+  });
+});
+
 // ---------- deleteMe ----------
 // Soft-delete the authenticated user's account. Anonymizes profile data,
 // kills all sessions, and removes room memberships in a transaction.
@@ -159,4 +200,4 @@ const deleteMe = asyncHandler(async (req, res) => {
   return ok(res, { message: 'Account deleted' });
 });
 
-module.exports = { getMe, updateProfile, listUsers, deleteMe };
+module.exports = { getMe, updateProfile, listUsers, searchUsers, deleteMe };

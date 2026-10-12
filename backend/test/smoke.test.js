@@ -46,12 +46,18 @@ const EXPECTED_ROUTES = [
   ['GET', '/api/users/me', true],
   ['PATCH', '/api/users/me', true],
   ['DELETE', '/api/users/me', true],
+  ['GET', '/api/users/me/preferences', true],
+  ['PATCH', '/api/users/me/preferences', true],
+  ['GET', '/api/users/search', true],
   ['GET', '/api/users', true],
   // rooms
   ['POST', '/api/rooms', true],
   ['GET', '/api/rooms', true],
   ['GET', '/api/rooms/:roomId', true],
+  ['PATCH', '/api/rooms/:roomId', true],
   ['POST', '/api/rooms/:roomId/members', true],
+  ['DELETE', '/api/rooms/:roomId/members/:userId', true],
+  ['PATCH', '/api/rooms/:roomId/members/:userId', true],
   ['POST', '/api/rooms/:roomId/seen', true],
   // messages
   ['POST', '/api/messages', true],
@@ -61,6 +67,9 @@ const EXPECTED_ROUTES = [
   ['DELETE', '/api/messages/:messageId', true],
   ['PUT', '/api/messages/:messageId/reactions', true],
   ['DELETE', '/api/messages/:messageId/reactions/:emoji', true],
+  ['PUT', '/api/messages/:messageId/pin', true],
+  ['DELETE', '/api/messages/:messageId/pin/:scope', true],
+  ['GET', '/api/messages/room/:roomId/pinned', true],
   // decisions
   ['POST', '/api/decisions', true],
   ['GET', '/api/decisions', true],
@@ -70,6 +79,7 @@ const EXPECTED_ROUTES = [
   // digest
   ['GET', '/api/digest', true],
   ['GET', '/api/digest/room/:roomId', true],
+  ['POST', '/api/digest/read', true],
   // tasks — implemented, but must be auth-guarded
   ['POST', '/api/tasks', true],
   ['GET', '/api/tasks', true],
@@ -80,6 +90,8 @@ const EXPECTED_ROUTES = [
   ['PATCH', '/api/notifications/seen', true],
   // upload — implemented, but must be auth-guarded
   ['POST', '/api/upload', true],
+  // attachments — the delivery proxy, auth-guarded and membership-checked
+  ['GET', '/api/attachments/:attachmentId', true],
 ];
 
 // Express keeps a router's own paths relative to its mount point, so a route

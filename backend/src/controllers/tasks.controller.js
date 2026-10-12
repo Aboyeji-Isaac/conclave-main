@@ -2,6 +2,7 @@ const { query } = require('../config/db');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const ApiError = require('../utils/ApiError');
+const { createNotification, presentNotification, emitNotification } = require('../services/notification.service');
 
 // In-chat Action Items — flag any message as a task, assign it, track
 // status in a per-room Tasks tab.
@@ -16,6 +17,11 @@ const ApiError = require('../utils/ApiError');
 
 const STATUSES = ['open', 'in_progress', 'done'];
 
+// The notes a flag-as-task dialog collects. The column is unbounded so the
+// limit lives in one place with the other input validation rather than being
+// duplicated as a column constraint that could drift from it.
+const MAX_BODY_LENGTH = 2000;
+
 // One shape for every task this module returns, matching what Tasks.jsx reads
 // (status, due_date, title, assignee_name, id) and the devPreview fixtures. Kept
 // as constants so create, list and update cannot drift apart — the same
@@ -24,7 +30,7 @@ const STATUSES = ['open', 'in_progress', 'done'];
 // a is LEFT JOINed: a task may be unassigned, and an INNER JOIN would silently
 // drop those rows from the board rather than showing them with a blank assignee.
 const TASK_COLUMNS = `
-  t.id, t.room_id, t.source_message_id, t.title,
+  t.id, t.room_id, t.source_message_id, t.title, t.body,
   t.assignee_id, t.status, to_char(t.due_date, 'YYYY-MM-DD') AS due_date,
   t.created_by, t.created_at, t.updated_at,
   r.name AS room_name,
@@ -41,7 +47,7 @@ const TASK_JOINS = `
 // ---------- createTask ----------
 // Flag a message as a task, optionally assigning it to a room member.
 const createTask = asyncHandler(async (req, res) => {
-  const { roomId, sourceMessageId, title, assigneeId, dueDate } = req.body;
+  const { roomId, sourceMessageId, title, body, assigneeId, dueDate } = req.body;
 
   if (!roomId || typeof title !== 'string' || !title.trim()) {
     throw new ApiError(400, 'roomId and title are required');
@@ -80,21 +86,25 @@ const createTask = asyncHandler(async (req, res) => {
     }
   }
 
+  if (body !== undefined && body !== null && String(body).length > MAX_BODY_LENGTH) {
+    throw new ApiError(400, `body must be at most ${MAX_BODY_LENGTH} characters`);
+  }
+
   // The CTE inserts, then selects through the shared column list, so the 201
   // response carries the same shape listTasks returns. A bare RETURNING * would
   // hand back the raw columns with no room_name or assignee_name.
   const result = await query(
     `WITH inserted AS (
        INSERT INTO tasks
-         (room_id, source_message_id, title, assignee_id, due_date, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (room_id, source_message_id, title, body, assignee_id, due_date, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *
      )
      SELECT ${TASK_COLUMNS}
      FROM inserted t
      INNER JOIN rooms r ON r.id = t.room_id
      LEFT JOIN users a ON a.id = t.assignee_id`,
-    [roomId, sourceMessageId || null, title.trim(), assigneeId || null, dueDate || null, req.user.id],
+    [roomId, sourceMessageId || null, title.trim(), body ? String(body).trim() : null, assigneeId || null, dueDate || null, req.user.id],
   );
 
   const task = result.rows[0];
@@ -112,6 +122,48 @@ const createTask = asyncHandler(async (req, res) => {
   const io = req.app.get('io');
   if (io) {
     io.to(task.room_id).emit('task:updated', { task });
+  }
+
+  /*
+   * Tell the assignee.
+   *
+   * Two cases deliberately notify nobody, and both are guarded here rather than
+   * left to createNotification:
+   *
+   *   - No assignee. An unassigned task is nobody's to act on, and the digest
+   *     already filters on assignee_id, so it surfaces to nobody either.
+   *   - Self-assigned. createNotification throws 400 when actorId equals
+   *     recipientId, so letting it through would turn a perfectly ordinary
+   *     "make me a task" into a failed request. Skipped at the call site, the
+   *     same way message.service excludes the sender from a self-mention.
+   *
+   * Written after the task commits rather than inside the INSERT, because the
+   * notification references the task id.
+   */
+  let notificationRow = null;
+  if (task.assignee_id && task.assignee_id !== req.user.id) {
+    try {
+      notificationRow = await createNotification({
+        recipientId: task.assignee_id,
+        type: 'task',
+        referenceId: task.id,
+        actorId: req.user.id,
+      });
+    } catch (err) {
+      // The task itself is created and correct. A failed notification must not
+      // undo that or fail the request — the assignee sees it on the board.
+      console.error('Could not write task notification', {
+        taskId: task.id,
+        assignee: task.assignee_id,
+        message: err.message,
+      });
+    }
+  }
+
+  // Resolved and pushed only after the row exists, same as addMember's invite.
+  if (notificationRow) {
+    const presented = await presentNotification(notificationRow);
+    emitNotification(io, task.assignee_id, presented);
   }
 
   return ok(res, task, 201);
