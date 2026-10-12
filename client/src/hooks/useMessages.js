@@ -6,7 +6,9 @@ import {
   deleteMessage as deleteMessageApi,
   editMessage as editMessageApi,
   listMessages,
+  pinMessage as pinMessageApi,
   removeReaction as removeReactionApi,
+  unpinMessage as unpinMessageApi,
 } from '../services/messages.service';
 
 const PAGE_SIZE = 50;
@@ -155,6 +157,8 @@ export default function useMessages(roomId, roomMembers = []) {
       );
     };
 
+    const onPinChanged = ({ message }) => replaceMessage(message);
+
     const onTyping = ({ roomId: eventRoom, userId }) => {
       if (eventRoom !== roomId || userId === viewerId) return;
       clearTimeout(typingTimers.current.get(userId));
@@ -216,6 +220,11 @@ export default function useMessages(roomId, roomMembers = []) {
     socket.on('message:updated', replaceMessage);
     socket.on('message:deleted', replaceMessage);
     socket.on('message:reaction', replaceMessage);
+    // Pins ride the same replace-the-row shape as reactions and edits: the
+    // payload is the message as it now is, pins included, so the menu labels
+    // below update without a refetch.
+    socket.on('message:pinned', onPinChanged);
+    socket.on('message:unpinned', onPinChanged);
     socket.on('typing', onTyping);
     socket.on('stop-typing', onStopTyping);
     socket.on('room-typing', onRoomTyping);
@@ -233,6 +242,8 @@ export default function useMessages(roomId, roomMembers = []) {
       socket.off('message:updated', replaceMessage);
       socket.off('message:deleted', replaceMessage);
       socket.off('message:reaction', replaceMessage);
+      socket.off('message:pinned', onPinChanged);
+      socket.off('message:unpinned', onPinChanged);
       socket.off('typing', onTyping);
       socket.off('stop-typing', onStopTyping);
       socket.off('room-typing', onRoomTyping);
@@ -351,6 +362,14 @@ export default function useMessages(roomId, roomMembers = []) {
 
   const deliveryIds = useMemo(() => ({ pendingIds, failedIds }), [pendingIds, failedIds]);
 
+  // Both scopes. The panel and the message menu call these same two functions,
+  // so a pin started in one place behaves identically to one started in the
+  // other. The socket events do the timeline update, so neither applies
+  // optimistically — a 409 (somebody else holds the room pin) is shown as an
+  // error rather than as a pin that silently fails.
+  const pinMessage = (messageId, scope) => pinMessageApi(messageId, scope);
+  const unpinMessage = (messageId, scope) => unpinMessageApi(messageId, scope);
+
   return {
     messages,
     isLoading,
@@ -363,6 +382,8 @@ export default function useMessages(roomId, roomMembers = []) {
     editMessage,
     removeMessage,
     toggleReaction,
+    pinMessage,
+    unpinMessage,
     typingUserIds,
     readPointers,
     deliveryIds,

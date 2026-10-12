@@ -39,13 +39,22 @@ function iconFor(mimeType = '') {
 /**
  * One attachment on a message.
  *
- * The download is a plain link to the stored URL rather than a fetched blob:
- * these are Cloudinary assets with their own signed delivery, and routing them
- * through the client would add a proxy for no benefit while breaking the
- * browser's own handling of PDFs and images.
+ * The href points at this app's own `/attachments/:id` rather than at the
+ * stored Cloudinary URL, for two reasons that both turned out to matter:
  *
- * `rel="noreferrer"` because the URL is user-supplied content. Without it a
- * hostile file host would receive the referrer of an authenticated app.
+ * 1. Access. A direct Cloudinary link meant anyone who ever saw the URL could
+ *    download the file with no check that they were in the room. The proxy
+ *    resolves the attachment to its room and refuses anyone who is not a member.
+ *
+ * 2. Delivery. The Cloudinary delivery domain returns 401 "deny or ACL failure"
+ *    on this account for everything that is not a plain image — images served
+ *    fine, a PDF and a ZIP both failed — so every document attachment was a dead
+ *    link. The proxy fetches through Cloudinary's authenticated API instead,
+ *    which is not subject to those delivery rules.
+ *
+ * `download` is not set: the proxy already sends Content-Disposition:
+ * attachment, and setting it twice would let a filename chosen by the sender
+ * override the sanitised one the server emits.
  *
  * @param {{ id?: string, filename: string, size?: number, mime_type?: string, url: string }} attachment
  */
@@ -53,12 +62,15 @@ export default function AttachmentCard({ attachment }) {
   const Icon = iconFor(attachment.mime_type);
   const size = formatSize(attachment.size);
 
+  // Fall back to the stored URL only when there is no id at all, which happens
+  // for a message payload from before the proxy existed.
+  const href = attachment.id ? `/attachments/${attachment.id}` : attachment.url;
+
   return (
     <a
-      href={attachment.url}
+      href={href}
       target="_blank"
       rel="noreferrer noopener"
-      download={attachment.filename}
       className="group flex w-full max-w-sm items-center gap-3 rounded-lg border border-line bg-canvas px-3 py-2.5 transition-colors hover:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
     >
       <Icon className="h-5 w-5 shrink-0 text-muted" aria-hidden="true" />

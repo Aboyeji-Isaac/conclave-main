@@ -1,75 +1,224 @@
-// Functional placeholder: there is no Profile screen in the Penpot design yet.
-// Replace this once the screen has been designed.
-import { useAuth } from '../contexts/AuthContext';
-import Button from '../components/ui/Button';
-import IconSignOut from '../assets/icons/sign-out.svg?react';
-import IconDelete from '../assets/icons/delete.svg?react';
+import { useEffect, useRef, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
+import IconCamera from '@/assets/icons/camera.svg?react';
+import IconDelete from '@/assets/icons/delete.svg?react';
+import IconSignOut from '@/assets/icons/sign-out.svg?react';
+import Avatar from '@/components/ui/Avatar';
+import Button from '@/components/ui/Button';
+import Input from '@/components/ui/Input';
+import Modal from '@/components/ui/Modal';
+import Textarea from '@/components/ui/Textarea';
+import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/contexts/ToastContext';
+import { uploadAvatar } from '@/services/users.service';
 
+/**
+ * Profile — the signed-in user's own account.
+ *
+ * Three editable fields, and only three: `PATCH /users/me` whitelists
+ * display_name, avatar_url and bio. Email and password are deliberately absent
+ * rather than disabled — there are no endpoints for either, and a greyed-out
+ * "Change email" is a promise the product cannot keep.
+ *
+ * The avatar is a two-step save, upload then PATCH. It cannot be one call: the
+ * upload endpoint returns a URL and knows nothing about profiles, while the
+ * profile endpoint takes a URL and knows nothing about files. Uploading on pick
+ * rather than on submit matches the composer, so a failure is visible before the
+ * form is committed rather than after.
+ *
+ * @param {object} props
+ */
 export default function Profile() {
-  const { user, logout } = useAuth();
+  const { setRoomHeader } = useOutletContext();
+  const { user, logout, updateProfile, deleteAccount } = useAuth();
+  const { toast } = useToast();
+  const fileRef = useRef(null);
 
-  const displayName = user?.display_name || 'Unknown user';
-  const email = user?.email || '—';
-  const initials =
-    displayName
-      .split(' ')
-      .filter(Boolean)
-      .map((part) => part[0])
-      .slice(0, 2)
-      .join('')
-      .toUpperCase() || '?';
+  const [displayName, setDisplayName] = useState('');
+  const [bio, setBio] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
-  function handleDeleteAccount() {
-    // No account-deletion endpoint exists yet (users.routes.js exposes only
-    // GET/PATCH /users/me). Wire the real request here once the backend adds one.
-    window.alert('Account deletion isn’t available yet.');
+  useEffect(() => {
+    setRoomHeader('Profile');
+    return () => setRoomHeader(null);
+  }, [setRoomHeader]);
+
+  // Seed the form from the context user once it exists, rather than on mount:
+  // under the real API this page can render before /users/me resolves.
+  useEffect(() => {
+    if (!user) return;
+    setDisplayName(user.display_name || '');
+    setBio(user.bio || '');
+    setAvatarUrl(user.avatar_url || null);
+  }, [user]);
+
+  const nameChanged = displayName.trim() !== (user?.display_name || '');
+  const bioChanged = bio !== (user?.bio || '');
+  const isDirty = nameChanged || bioChanged;
+
+  async function onPickAvatar(event) {
+    const file = event.target.files?.[0];
+    // Reset first: picking the same file twice in a row fires no change event
+    // otherwise, so a failed upload could not be retried with the same image.
+    event.target.value = '';
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      const url = await uploadAvatar(file);
+      setAvatarUrl(url);
+      await updateProfile({ avatar_url: url });
+      toast({ title: 'Photo updated', tone: 'success' });
+    } catch (err) {
+      toast({
+        title: 'Upload failed',
+        description: err.response?.data?.message || 'Could not upload that image.',
+        tone: 'error',
+      });
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  async function onSave(event) {
+    event.preventDefault();
+    setIsSaving(true);
+    try {
+      await updateProfile({ display_name: displayName.trim(), bio });
+      toast({ title: 'Profile saved', tone: 'success' });
+    } catch (err) {
+      toast({
+        title: 'Could not save',
+        description: err.response?.data?.message || 'Your profile was not updated.',
+        tone: 'error',
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function onConfirmDelete() {
+    try {
+      await deleteAccount();
+      setConfirmDelete(false);
+    } catch (err) {
+      toast({
+        title: 'Could not delete',
+        description: err.response?.data?.message || 'Your account was not deleted.',
+        tone: 'error',
+      });
+    }
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-7">
-      <div className="max-w-[640px]">
-        <h1 className="text-xl font-bold leading-6 tracking-[-0.01em]">Profile</h1>
+    <div className="mx-auto h-full min-h-0 max-w-2xl overflow-y-auto px-4 py-8 md:px-7">
+      <h1 className="text-h1 text-ink">Profile</h1>
+      <p className="mt-2 text-body leading-relaxed text-muted">
+        How you appear to everyone else in the workspace.
+      </p>
 
-        <section className="mt-8 flex items-center gap-4">
-          {user?.avatar_url ? (
-            <img
-              src={user.avatar_url}
-              alt=""
-              className="h-16 w-16 rounded-full object-cover"
-            />
-          ) : (
-            <div className="grid h-16 w-16 place-items-center rounded-full bg-canvas text-base font-semibold text-muted">
-              {initials}
-            </div>
-          )}
-          <div className="min-w-0">
-            <p className="text-base font-semibold text-ink">{displayName}</p>
-            <p className="mt-1 text-sm text-muted">{email}</p>
-          </div>
-        </section>
-
-        <section className="mt-8">
-          <Button variant="secondary" onClick={logout} className="gap-2">
-            <IconSignOut className="h-5 w-5" />
-            Log out
-          </Button>
-        </section>
-
-        <section className="mt-12 border-t border-line pt-8">
-          <h2 className="text-base font-bold leading-5 text-error">Danger zone</h2>
-          <p className="mt-2 text-sm text-muted">
-            Deleting your account is permanent and can’t be undone.
-          </p>
-          <button
-            type="button"
-            onClick={handleDeleteAccount}
-            className="mt-4 inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-error px-4 text-sm font-semibold text-error transition-colors hover:bg-error hover:text-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/30"
+      <section className="mt-8 flex items-center gap-4">
+        <Avatar name={displayName} src={avatarUrl} size="lg" />
+        <div className="min-w-0">
+          <Button
+            variant="secondary"
+            onClick={() => fileRef.current?.click()}
+            disabled={isUploading}
+            className="gap-2"
           >
-            <IconDelete className="h-5 w-5" />
-            Delete account
-          </button>
-        </section>
-      </div>
+            <IconCamera className="h-4 w-4" aria-hidden="true" />
+            {isUploading ? 'Uploading…' : 'Change photo'}
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={onPickAvatar}
+            className="sr-only"
+            aria-label="Upload a profile photo"
+          />
+          <p className="mt-2 text-metadata text-muted">PNG, JPEG, WebP or GIF.</p>
+        </div>
+      </section>
+
+      <form onSubmit={onSave} className="mt-8 space-y-5">
+        <Input
+          label="Display name"
+          value={displayName}
+          onChange={(event) => setDisplayName(event.target.value)}
+          maxLength={100}
+          required
+        />
+        <Input label="Email" value={user?.email || '—'} readOnly disabled />
+        <Textarea
+          label="About"
+          value={bio}
+          onChange={(event) => setBio(event.target.value)}
+          maxLength={1000}
+          placeholder="A line about what you work on"
+        />
+
+        <div className="flex items-center gap-3">
+          <Button type="submit" disabled={!isDirty || isSaving || !displayName.trim()}>
+            {isSaving ? 'Saving…' : 'Save changes'}
+          </Button>
+          {isDirty && !isSaving && (
+            <span className="text-metadata text-muted">Unsaved changes</span>
+          )}
+        </div>
+      </form>
+
+      <section className="mt-8">
+        <Button variant="secondary" onClick={logout} className="gap-2">
+          <IconSignOut className="h-4 w-4" aria-hidden="true" />
+          Log out
+        </Button>
+      </section>
+
+      <section className="mt-12 border-t border-line pt-8">
+        <h2 className="text-h2 text-error">Danger zone</h2>
+        <p className="mt-2 text-body leading-relaxed text-muted">
+          Deleting your account removes your name, email and every room you are in. Your messages
+          and decisions stay, shown as “Deleted user”. This cannot be undone.
+        </p>
+        <Button
+          variant="secondary"
+          onClick={() => setConfirmDelete(true)}
+          className="mt-4 gap-2 border-error text-error hover:bg-error/5"
+        >
+          <IconDelete className="h-4 w-4" aria-hidden="true" />
+          Delete account
+        </Button>
+      </section>
+
+      <Modal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title="Delete your account?"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={onConfirmDelete}
+              className="border-error bg-error text-surface hover:bg-error/90"
+            >
+              Delete permanently
+            </Button>
+          </>
+        }
+      >
+        <p className="text-body leading-relaxed text-muted">
+          You will be signed out on every device. Your email address is released, so it can be
+          registered again — but nothing you wrote comes back with it.
+        </p>
+      </Modal>
     </div>
   );
 }

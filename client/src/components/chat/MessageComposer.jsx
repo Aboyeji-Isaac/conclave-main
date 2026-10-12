@@ -45,6 +45,9 @@ export default function MessageComposer({
   onTyping,
   replyTo,
   onCancelReply,
+  // The room pane is a grid and addresses its rows explicitly, so the composer
+  // needs to accept the placement the parent decides rather than hardcoding one.
+  className = '',
 }) {
   const [content, setContent] = useState('');
   const [error, setError] = useState('');
@@ -89,6 +92,20 @@ export default function MessageComposer({
     setError('');
     signalTyping();
 
+    // Reconcile the recorded ids against the text that is actually there.
+    // mentionedIds only ever grew, so deleting "@Priya" after selecting her left
+    // the id in place and the mention still fired on send — a notification for
+    // somebody the message no longer names. Ids are rebuilt from the members
+    // whose @token is still present, which is the same fact the server acts on.
+    setMentionedIds((prev) => {
+      if (prev.length === 0) return prev;
+      return prev.filter((id) => {
+        const person = members.find((entry) => entry.id === id);
+        if (!person) return false;
+        return value.includes(`@${person.display_name}`);
+      });
+    });
+
     // The mention query is whatever follows an @ that has no space after it,
     // ending at the caret. Cheap, and correct for the only case that matters:
     // typing a name immediately after the @.
@@ -103,9 +120,12 @@ export default function MessageComposer({
     const before = content.slice(0, caret);
     const after = content.slice(caret);
     const match = before.match(/@([^\s@]*)$/);
-    if (!match) return;
 
-    const start = before.length - match[0].length;
+    // With no token to replace, append at the caret instead of giving up. The
+    // picker can be opened without an `@` (the button used to do exactly that),
+    // and returning early there left the list open and the text untouched with
+    // no indication anything had been attempted.
+    const start = match ? before.length - match[0].length : caret;
     const insertion = `@${member.display_name} `;
     setContent(`${content.slice(0, start)}${insertion}${after}`);
     setMentionQuery(null);
@@ -205,7 +225,7 @@ export default function MessageComposer({
   };
 
   return (
-    <form onSubmit={submit} className="relative shrink-0 bg-surface px-4 pb-6 pt-2">
+    <form onSubmit={submit} className={`relative shrink-0 bg-surface px-4 pb-6 pt-2 ${className}`}>
       {replyTo && (
         <div className="mb-2 flex items-center gap-3 rounded-lg border-l-2 border-brand bg-canvas px-3 py-2">
           <div className="min-w-0 flex-1">
@@ -256,6 +276,31 @@ export default function MessageComposer({
             type="button"
             disabled={disabled}
             onClick={() => {
+              const el = textareaRef.current;
+              const caret = el?.selectionStart ?? content.length;
+              const before = content.slice(0, caret);
+              const after = content.slice(caret);
+
+              // Insert the @ for real. The button used to just open the picker,
+              // which then did nothing: applyMention looks for an `@…` token
+              // before the caret, found none, and returned before inserting text
+              // or recording an id — so the list opened and no mention was ever
+              // made.
+              //
+              // Appending rather than inserting when the text does not already
+              // end in a mention keeps a second press from stacking `@`s, and
+              // leaves an in-progress token (`@Pr`) alone to keep filtering on.
+              if (!/@[^\s@]*$/.test(before)) {
+                const separator = before && !/\s$/.test(before) ? ' ' : '';
+                const next = `${before}${separator}@${after}`;
+                setContent(next);
+                const position = caret + separator.length + 1;
+                requestAnimationFrame(() => {
+                  el?.setSelectionRange(position, position);
+                  el?.focus();
+                });
+              }
+
               textareaRef.current?.focus();
               setMentionQuery('');
             }}

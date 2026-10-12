@@ -36,7 +36,12 @@ Full product/architecture context: [`docs/PKB_Project_Architecture_Brief.docx`](
    cd backend
    npm install
    npm run migrate
+   npm run seed
    ```
+   The seed command creates five login accounts in the `Conclave Test Room`:
+   `admin1@example.test` and `admin2@example.test` are room admins; the other
+   three are members. All five use the password `ConclaveTest123!`. It is
+   repeatable and is blocked when `NODE_ENV=production`.
 
 4. **Start the backend:**
    ```bash

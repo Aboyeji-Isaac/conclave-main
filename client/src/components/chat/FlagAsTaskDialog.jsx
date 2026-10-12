@@ -56,6 +56,9 @@ export default function FlagAsTaskDialog({ open, onClose, message, roomId, membe
         roomId,
         sourceMessageId: message?.id,
         title: title.trim(),
+        // Was collected and never sent. tasks had no column for it until
+        // migration 017, so everything typed here was silently discarded.
+        body: body.trim() || undefined,
         assigneeId: assigneeId || undefined,
         dueDate: dueDate || undefined,
       });

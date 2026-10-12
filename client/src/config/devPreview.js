@@ -20,6 +20,11 @@ export const previewRoom = {
   name: "Product & Engineering",
   slug: "product-eng",
   type: "group",
+  // Phase 8: rooms carry a description, editable by an admin. Without one here
+  // the room-info edit form has nothing to prefill and cannot be seen working
+  // offline.
+  description:
+    "Deployment, config and release coordination for the product surface.",
   member_count: 4,
   my_role: "admin",
   last_seen_at: "2026-10-08T08:00:00.000Z",
@@ -56,6 +61,10 @@ export const previewDmRoom = {
   name: "Victor",
   slug: null,
   type: "dm",
+  // Deliberately absent. Migration 017 puts description on rooms but not on
+  // DMs: a direct message has no purpose to describe, and its display name is
+  // derived from the other member on every read.
+  description: null,
   member_count: 2,
   my_role: "member",
   last_seen_at: "2026-10-08T10:00:00.000Z",
@@ -100,6 +109,7 @@ export const previewMessages = [
       { emoji: '🎉', count: 1, reacted: false },
     ],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     edited_at: null,
     reply_to_id: null,
@@ -115,6 +125,7 @@ export const previewMessages = [
       "Sounds good. This keeps our real-time path focused and reduces operational overhead.",
     reactions: [],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     edited_at: null,
     reply_to_id: null,
@@ -132,6 +143,7 @@ export const previewMessages = [
     // The id, not the name: a mention means one person, and display names are
     // not unique — two Priyas would both be notified by a name-only mention.
     mentioned_user_ids: ["dev-priya"],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     // An edit that changed the text, so the "edited" label has something to
     // describe. The timestamp is still the original creation time.
@@ -148,6 +160,7 @@ export const previewMessages = [
     content: "On it—validating the config and will update here by EOD.",
     reactions: [{ emoji: '✅', count: 1, reacted: false }],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     edited_at: null,
     // A reply, so the preview bar and the in-timeline quote both render.
@@ -163,6 +176,7 @@ export const previewMessages = [
     content: "Here's the Q3 performance report.",
     reactions: [],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     edited_at: null,
     reply_to_id: null,
@@ -186,6 +200,7 @@ export const previewMessages = [
     content: "Screenshot from the staging deploy:",
     reactions: [{ emoji: '👍', count: 1, reacted: false }],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     edited_at: null,
     reply_to_id: null,
@@ -209,6 +224,7 @@ export const previewMessages = [
     content: "",
     reactions: [],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: false,
     edited_at: null,
     reply_to_id: null,
@@ -242,6 +258,7 @@ export const previewMessages = [
     content: "",
     reactions: [],
     mentioned_user_ids: [],
+    pins: { room: null, mine: [] },
     is_deleted: true,
     edited_at: null,
     reply_to_id: null,
@@ -261,6 +278,40 @@ export const previewMessages = [
 // and is a list because a decision can be both room-pinned and bookmarked. The
 // three entries below cover one of each state so the board can be read at a
 // glance: room-pinned, bookmarked only, and neither.
+/**
+ * One message pinned to the room, for the pinned-messages panel.
+ *
+ * Separate from `previewMessages` rather than flagged inside it, because the
+ * panel's contract is "the subset of this room that has a room pin" — deriving
+ * it from the timeline would mean the fixture and the feature disagreeing about
+ * which message it is.
+ */
+export const previewPinnedMessages = [
+  {
+    id: "dev-message-pinned-1",
+    room_id: previewRoom.id,
+    sender_id: "dev-user-2",
+    sender_name: "Tomas Nowak",
+    sender_avatar: null,
+    content:
+      "We are keeping the 2 hour timeout for the deploy job. If it has not finished by then, that is the signal, not a failure to hide.",
+    reactions: [{ emoji: '👍', count: 2, reacted: true }],
+    mentioned_user_ids: [],
+    is_deleted: false,
+    edited_at: null,
+    reply_to_id: null,
+    created_at: "2026-08-27T08:12:00.000Z",
+    pins: {
+      room: {
+        user_id: "dev-user-2",
+        display_name: "Tomas Nowak",
+        pinned_at: "2026-08-27T08:15:00.000Z",
+      },
+      mine: [],
+    },
+  },
+];
+
 export const previewDecisions = [
   {
     id: "dev-decision-1",
@@ -342,10 +393,10 @@ export const previewDigestItems = [
 // controller returns, same convenience as sender_name on previewMessages —
 // without it a cross-room board cannot say which room a card belongs to.
 export const previewTasks = [
-  { id: "dev-task-1", room_id: previewRoom.id, room_name: previewRoom.name, status: "open", title: "Confirm production upload limits", assignee_id: "dev-priya", assignee_name: "Priya", due_date: "2026-08-22" },
+  { id: "dev-task-1", room_id: previewRoom.id, room_name: previewRoom.name, status: "open", title: "Confirm production upload limits", body: "Staging says 25MB is the ceiling we should document. Check what the marketing copy currently claims before we change the limit.", assignee_id: "dev-priya", assignee_name: "Priya", due_date: "2026-08-22" },
   { id: "dev-task-2", room_id: previewRoom.id, room_name: previewRoom.name, status: "open", title: "Validate deployment config", assignee_id: "dev-victor", assignee_name: "Victor", due_date: "2026-08-23" },
   { id: "dev-task-3", room_id: "dev-room-deployments", room_name: "Deployments", status: "open", title: "Review storage alerts", assignee_id: "dev-victor", assignee_name: "Victor", due_date: "2026-08-24" },
-  { id: "dev-task-4", room_id: previewRoom.id, room_name: previewRoom.name, status: "in_progress", title: "Draft API rate-limit docs", assignee_id: previewUser.id, assignee_name: "Amina", due_date: "2026-08-21" },
+  { id: "dev-task-4", room_id: previewRoom.id, room_name: previewRoom.name, status: "in_progress", title: "Draft API rate-limit docs", body: null, assignee_id: previewUser.id, assignee_name: "Amina", due_date: "2026-08-21" },
   { id: "dev-task-5", room_id: "dev-room-deployments", room_name: "Deployments", status: "in_progress", title: "Wire Socket.IO reconnect handling", assignee_id: "dev-daniel", assignee_name: "Daniel", due_date: "2026-08-25" },
   { id: "dev-task-6", room_id: previewRoom.id, room_name: previewRoom.name, status: "done", title: "Set up staging environment", assignee_id: "dev-victor", assignee_name: "Victor", due_date: "2026-08-18" },
   { id: "dev-task-7", room_id: previewRoom.id, room_name: previewRoom.name, status: "done", title: "Migrate auth middleware to JWT", assignee_id: previewUser.id, assignee_name: "Amina", due_date: "2026-08-19" },
@@ -410,6 +461,43 @@ export const previewNotifications = [
     },
   },
 ];
+
+// Phase 7 fixtures.
+//
+// `previewUsers` backs the two people pickers (new chat, add member). It is the
+// /users/search shape, which deliberately is NOT listUsers' shape: no `email`
+// field, because the endpoint this drives omits it so a compose box cannot hand
+// every address in the workspace to anyone who can type a name. previewRoom and
+// previewDmRoom already carry the other three people, so those three appear here
+// with matching ids — a picker that offered somebody already in the room would be
+// a different bug, and one the fixture should make visible.
+export const previewUsers = [
+  { id: previewRoom.members[1].id, display_name: 'Victor', avatar_url: null },
+  { id: previewRoom.members[2].id, display_name: 'Priya', avatar_url: null },
+  { id: previewRoom.members[3].id, display_name: 'Daniel', avatar_url: null },
+  { id: 'dev-nadia', display_name: 'Nadia Okonkwo', avatar_url: null },
+  { id: 'dev-tomas', display_name: 'Tomás Rivera', avatar_url: null },
+];
+
+// The room list, as a mutable array rather than the two fixtures inline.
+//
+// phase 7 can create a room, add a member and remove one. A fresh
+// `[previewRoom, previewDmRoom]` literal per call would make every one of those
+// edits disappear the moment the page refetched, so the screens would look
+// broken in exactly the way dev-preview exists to prevent. Mutating this array
+// is what lets the round trip be seen offline.
+export const previewRooms = [previewRoom, previewDmRoom];
+
+// One row of `GET /users/me/preferences`. Shape matches the controller's
+// default answer for an account that has never saved anything: the GET returns
+// these same values without a row existing, so the screen cannot tell "never
+// configured" from "configured to the defaults".
+export const previewPreferences = {
+  activity_level: 'all',
+  muted: {},
+  push_enabled: true,
+  updatedAt: null,
+};
 
 const listeners = new Map();
 export const previewSocket = {

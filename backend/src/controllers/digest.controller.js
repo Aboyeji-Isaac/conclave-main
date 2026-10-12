@@ -23,9 +23,14 @@ const ApiError = require('../utils/ApiError');
 const getRoomDigest = asyncHandler(async (req, res) => {
   const { roomId } = req.params;
 
-  // 1. Verify membership and get last_seen_at
+  // 1. Verify membership and get the digest pointer.
+  //
+  // digest_seen_at rather than last_seen_at: this endpoint used to filter on
+  // the read receipt, so opening the room advanced the pointer and a digest
+  // fetched afterwards found nothing — which is why the in-room catch-up card
+  // was removed in phase 6 and could not simply be reinstated here.
   const membership = await query(
-    `SELECT rm.last_seen_at, r.name AS room_name
+    `SELECT rm.digest_seen_at, r.name AS room_name
      FROM room_members rm
      INNER JOIN rooms r ON r.id = rm.room_id
      WHERE rm.room_id = $1 AND rm.user_id = $2`,
@@ -34,7 +39,7 @@ const getRoomDigest = asyncHandler(async (req, res) => {
   if (membership.rows.length === 0) {
     throw new ApiError(403, 'You are not a member of this room');
   }
-  const lastSeenAt = membership.rows[0].last_seen_at;
+  const lastSeenAt = membership.rows[0].digest_seen_at;
   const roomName = membership.rows[0].room_name;
 
   // 2. New decisions since last visit
@@ -88,16 +93,26 @@ const getRoomDigest = asyncHandler(async (req, res) => {
      INNER JOIN messages m ON m.id = a.message_id
      INNER JOIN users u ON u.id = m.sender_id
      WHERE m.room_id = $1 AND a.created_at > $2
+       AND m.deleted_at IS NULL
      ORDER BY a.created_at DESC
      LIMIT 20`,
     [roomId, lastSeenAt],
   );
 
-  // 6. Activity count (total new messages since last visit)
+  // 6. Activity count (total new messages since the digest was last marked).
+  //
+  // deleted_at IS NULL because the cross-room query has it and this one did
+  // not, so the two endpoints counted different things: a retracted message
+  // showed up as activity here and not there.
+  //
+  // MAX(created_at) is carried out so the item can be stamped with when the room
+  // was actually active. It was stamped with the digest pointer instead, which
+  // is a constant for every room and floated every active room to the top of a
+  // sorted list.
   const activity = await query(
-    `SELECT COUNT(*)::int AS message_count
+    `SELECT COUNT(*)::int AS message_count, MAX(created_at) AS last_activity_at
      FROM messages
-     WHERE room_id = $1 AND created_at > $2`,
+     WHERE room_id = $1 AND created_at > $2 AND deleted_at IS NULL`,
     [roomId, lastSeenAt],
   );
 
@@ -146,7 +161,7 @@ const getRoomDigest = asyncHandler(async (req, res) => {
           metadata: null,
           room_id: roomId,
           room_name: roomName,
-          created_at: lastSeenAt,
+          created_at: activity.rows[0].last_activity_at,
         }]
       : []),
   ];
@@ -166,9 +181,8 @@ const getRoomDigest = asyncHandler(async (req, res) => {
 // ---------- getUserDigest ----------
 // Cross-room: aggregate digest across all rooms the user is in
 const getUserDigest = asyncHandler(async (req, res) => {
-  // Get all rooms the user is in with their last_seen_at
   const rooms = await query(
-    `SELECT room_id, last_seen_at FROM room_members WHERE user_id = $1`,
+    `SELECT room_id FROM room_members WHERE user_id = $1`,
     [req.user.id],
   );
 
@@ -178,10 +192,15 @@ const getUserDigest = asyncHandler(async (req, res) => {
   }
 
   // Every category below joins room_members on (room_id, user_id) and filters
-  // against that row's own last_seen_at. A single shared timestamp would be
-  // wrong: last_seen_at is per room, so a user who read #design-crit this
-  // morning but not #marketing since last week must see the marketing backlog
-  // and not the design one. See BACKEND_TASKS.md Bug 2.
+  // against that row's own digest_seen_at. A single shared timestamp would be
+  // wrong: the pointer is per room, so a user who read #design-crit this morning
+  // but not #marketing since last week must see the marketing backlog and not
+  // the design one. See BACKEND_TASKS.md Bug 2.
+  //
+  // digest_seen_at and not last_seen_at, deliberately. The digest used to filter
+  // on the read receipt, which meant opening a room — advancing last_seen_at to
+  // NOW() — erased the very backlog it was reporting on. Migration 018 splits
+  // them: reading advances the receipt, marking the digest read advances this.
   
 
   // 1. New decisions across all rooms
@@ -193,7 +212,7 @@ const getUserDigest = asyncHandler(async (req, res) => {
      INNER JOIN users u ON u.id = d.created_by
      INNER JOIN room_members rm ON rm.room_id = d.room_id AND rm.user_id = $2
      WHERE d.room_id = ANY($1)
-       AND d.created_at > rm.last_seen_at
+       AND d.created_at > rm.digest_seen_at
      ORDER BY d.created_at DESC
      LIMIT 50`,
     [roomIds, req.user.id],
@@ -209,7 +228,7 @@ const getUserDigest = asyncHandler(async (req, res) => {
      INNER JOIN room_members rm ON rm.room_id = t.room_id AND rm.user_id = $2
      WHERE t.room_id = ANY($1)
        AND t.assignee_id = $2
-       AND t.updated_at > rm.last_seen_at
+       AND t.updated_at > rm.digest_seen_at
      ORDER BY t.updated_at DESC
      LIMIT 50`,
     [roomIds, req.user.id],
@@ -231,7 +250,7 @@ const getUserDigest = asyncHandler(async (req, res) => {
        AND mm.user_id = $2
        AND m.sender_id != $2
        AND m.deleted_at IS NULL
-       AND m.created_at > rm.last_seen_at
+       AND m.created_at > rm.digest_seen_at
      ORDER BY m.created_at DESC
      LIMIT 50`,
     [roomIds, req.user.id],
@@ -247,7 +266,7 @@ const getUserDigest = asyncHandler(async (req, res) => {
      INNER JOIN users u ON u.id = m.sender_id
      INNER JOIN room_members rm ON rm.room_id = m.room_id AND rm.user_id = $2
      WHERE m.room_id = ANY($1)
-       AND a.created_at > rm.last_seen_at
+       AND a.created_at > rm.digest_seen_at
      ORDER BY a.created_at DESC
      LIMIT 50`,
     [roomIds, req.user.id],
@@ -266,7 +285,7 @@ const getUserDigest = asyncHandler(async (req, res) => {
      INNER JOIN rooms r ON r.id = m.room_id
      INNER JOIN room_members rm ON rm.room_id = m.room_id AND rm.user_id = $2
      WHERE m.room_id = ANY($1)
-       AND m.created_at > rm.last_seen_at
+       AND m.created_at > rm.digest_seen_at
        AND m.deleted_at IS NULL
      GROUP BY m.room_id, r.name`,
     [roomIds, req.user.id],
@@ -332,4 +351,53 @@ const getUserDigest = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { getRoomDigest, getUserDigest };
+
+// ---------- markDigestRead ----------
+// Advance the digest pointer.
+//
+// Separate from last_seen_at and advanced only from here, which is the whole
+// point of migration 018. Opening a room used to advance the read receipt, and
+// the digest filtered on that receipt, so arriving at the app and then opening
+// /digest showed an empty page for a workspace full of activity.
+//
+// Takes an optional roomId to clear one room; with no body it clears every room
+// the caller is in. Updating rather than inserting because the row already
+// exists — room_members is how membership is stored — and the column is NOT
+// NULL with a default, so a room the caller has never marked simply updates
+// from its initial value.
+//
+// The message deliberately does not advance last_seen_at. "I have seen the
+// catch-up list" and "I have read the messages" are different claims, and
+// conflating them is what broke this in the first place.
+const markDigestRead = asyncHandler(async (req, res) => {
+  const { roomId } = req.body || {};
+
+  if (roomId) {
+    const result = await query(
+      `UPDATE room_members
+          SET digest_seen_at = NOW()
+        WHERE room_id = $1 AND user_id = $2
+        RETURNING room_id`,
+      [roomId, req.user.id],
+    );
+    if (result.rows.length === 0) {
+      throw new ApiError(403, 'You are not a member of this room');
+    }
+    return ok(res, { rooms: result.rows.map((r) => r.room_id), digestSeenAt: new Date().toISOString() });
+  }
+
+  const all = await query(
+    `UPDATE room_members
+        SET digest_seen_at = NOW()
+      WHERE user_id = $1
+      RETURNING room_id`,
+    [req.user.id],
+  );
+
+  return ok(res, {
+    rooms: all.rows.map((r) => r.room_id),
+    digestSeenAt: new Date().toISOString(),
+  });
+});
+
+module.exports = { getRoomDigest, getUserDigest, markDigestRead };

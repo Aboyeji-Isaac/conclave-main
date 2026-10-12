@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import AuthLayout from '@/components/layout/AuthLayout';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
@@ -18,7 +18,6 @@ import { useAuth } from '@/contexts/AuthContext';
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -29,7 +28,11 @@ export default function Login() {
     setError('');
     try {
       await login(form);
-      navigate(location.state?.from?.pathname || '/chats', { replace: true });
+      // Always the chat list, never the page you were bounced from. Resuming a
+      // deep link sounds considerate until the session expires on /settings or
+      // /profile, where signing in then dumping you back on that screen reads
+      // as "the app ignored my login" rather than as "we remembered".
+      navigate('/chats', { replace: true });
     } catch (err) {
       setError(err.response?.data?.message || 'Could not sign in.');
     } finally {

@@ -7,15 +7,16 @@ import { useNotifications } from '@/contexts/NotificationsContext';
 
 // Type-to-display mapping lives here, not in the fixtures and not in the
 // service: the server sends a bare type, and display copy is presentation.
-// Five types exist (notification.service.js MESSAGE_TARGET_TYPES and
-// ROOM_TARGET_TYPES); an unknown one still renders rather than throwing,
-// because a new server-side type should not blank this page.
+// Six types exist (notification.service.js MESSAGE_TARGET_TYPES,
+// ROOM_TARGET_TYPES and TASK_TARGET_TYPES); an unknown one still renders rather
+// than throwing, because a new server-side type should not blank this page.
 const TYPES = {
   mention: { label: 'Mention', dot: 'bg-brand' },
   new_message: { label: 'New message', dot: 'bg-muted' },
   file_uploaded: { label: 'File shared', dot: 'bg-brand' },
   room_invite: { label: 'Room invite', dot: 'bg-success' },
   member_joined: { label: 'Member joined', dot: 'bg-success' },
+  task: { label: 'Task assigned', dot: 'bg-warning' },
 };
 
 const FILTERS = [
@@ -62,12 +63,21 @@ function Row({ notification, onOpen }) {
           </span>
         </span>
 
-        {/* actor_name is who caused it; message_preview is what they said.
+        {/*
+            actor_name is who caused it; message_preview is what they said.
             A room-targeted type has no message, so preview is null rather
-            than empty — render the room name instead of a blank line. */}
+            than empty — render the room name instead of a blank line.
+            task_title is the assigned task's title: not a sentence anyone
+            said, so it has its own field rather than borrowing the preview. */}
         <span className="mt-0.5 block truncate text-body text-ink">
           {context.actor_name ? `${context.actor_name} in ${context.room_name || 'a room'}` : context.room_name || 'A room'}
         </span>
+
+        {context.task_title && (
+          <span className="mt-0.5 block truncate text-metadata text-muted">
+            {context.task_title}
+          </span>
+        )}
 
         {context.message_preview && (
           <span className="mt-0.5 block truncate text-metadata text-muted">

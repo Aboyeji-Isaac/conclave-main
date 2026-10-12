@@ -21,19 +21,41 @@
     <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
 
     <!--
-      Sharing metadata. There is no og:image on purpose: the repo has no logo or
-      screenshot asset, and pointing a card at a URL that does not exist renders
-      worse than shipping a text-only card. Add one when the logo lands.
+      Icons. The SVG first so modern browsers take the vector; the 32px PNG is
+      the fallback for anything that will not render SVG, and apple-touch-icon
+      is what iOS puts on the home screen — it needs an opaque PNG, because iOS
+      composites alpha onto black.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <!--
+      Sharing metadata. og:image is an ABSOLUTE url: scrapers resolve it from
+      the document's own url, so a relative path resolves against whatever page
+      the card is generated from and silently fails. Both are generated from
+      src/assets/brand/logo.svg into public/.
     -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Conclave" />
+    <meta property="og:url" content="https://conclave-main.vercel.app" />
     <meta property="og:title" content="Conclave" />
     <meta
       property="og:description"
       content="Private team messaging with decisions, action items and a catch-up digest, so the important part does not disappear into the scroll."
     />
+    <meta property="og:image" content="https://conclave-main.vercel.app/og.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Conclave — private team messaging with decisions, action items and a catch-up digest"
+    />
     <meta property="og:locale" content="en_US" />
-    <meta name="twitter:card" content="summary" />
+    <!-- large_image, not summary: there is a 1200x630 card to show now, and
+         summary would crop it to a small thumbnail. -->
+    <meta name="twitter:card" content="summary_large_image" />
 
     <!--
       Set the theme class before anything paints. This has to come BEFORE every

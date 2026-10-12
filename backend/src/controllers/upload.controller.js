@@ -58,22 +58,44 @@ const ALLOWED_MIME_TYPES = new Set([
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 /**
+ * Where an asset is stored in Cloudinary.
+ *
+ * This was `'auto'`, which sounded safer because Cloudinary classifies the file
+ * itself. It is not, for documents: `auto` files a PDF under the `image` store
+ * because Cloudinary can render its pages, and then serving the *original* PDF
+ * back out of an image store fails — measured as a 401 "deny or ACL failure" on
+ * this account for a PDF that had uploaded perfectly. Only plain images were
+ * reliably retrievable.
+ *
+ * So the split is made explicitly: an image is an image, and everything else is
+ * raw. `auto` also decided *per request* and could disagree with the record
+ * written for it, which is worse than deciding once and storing the answer.
+ *
+ * @param {string} mimetype - as declared by the client (see note above)
+ * @returns {'image'|'raw'}
+ */
+function resourceTypeFor(mimetype) {
+  return mimetype.startsWith('image/') ? 'image' : 'raw';
+}
+
+/**
  * Push an in-memory buffer to Cloudinary and resolve with the stored asset.
  * Uses a stream rather than the buffer overload so the upload does not need a
  * second copy of the file in memory on top of multer's.
  *
- * Cloudinary infers the asset format from the filename extension, so `mimetype`
- * is only carried for the caller's own record.
+ * Returns the public_id and resource_type as well as the URL: delivery is
+ * served through the Admin API (see attachments.controller), and that endpoint
+ * is addressed by public_id, not by URL. The URL is still stored, because it is
+ * what the client used before the proxy existed and is the only thing left to
+ * fall back on for rows written before migration 016.
  *
- * @returns {Promise<{ url: string, bytes: number, format: string, resourceType: string }>}
+ * @returns {Promise<{ url: string, publicId: string, resourceType: string, bytes: number, format: string }>}
  */
-function streamToCloudinary(buffer, filename) {
+function streamToCloudinary(buffer, filename, resourceType) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
-        // 'auto' lets Cloudinary classify the asset. Without it a .pdf would
-        // have to be declared as an image or a raw file to be accepted.
-        resource_type: 'auto',
+        resource_type: resourceType,
         use_filename: true,
         filename_override: filename,
         // Folder them so the quota is easy to audit and clean up later.
@@ -81,18 +103,34 @@ function streamToCloudinary(buffer, filename) {
       },
       (error, result) => {
         if (error) return reject(error);
+        // Cloudinary's delivery signature is always taken over
+        // `public_id + "." + format`, but which half carries the extension is
+        // inconsistent across resource types on this account: listing the
+        // assets back shows `conclave/attachments/x.pdf` with format undefined
+        // for a raw file, and `conclave/attachments/y` with format "png" for an
+        // image. So the reference is normalised here, once, to always include
+        // the extension — and the proxy can then sign the stored value verbatim
+        // instead of guessing which shape it got.
+        // `format` is absent for raw uploads on this account (the extension is already
+        // inside public_id), so it has to be guarded: a naive template produced
+        // "…/x.pdf.undefined" and Cloudinary answered 404.
+        const suffix = result.format ? `.${result.format}` : '';
+        const cloudRef =
+          suffix && !String(result.public_id).endsWith(suffix)
+            ? `${result.public_id}${suffix}`
+            : result.public_id;
         resolve({
           url: result.secure_url,
+          publicId: cloudRef,
+          resourceType: result.resource_type || resourceType,
           bytes: result.bytes,
           format: result.format,
-          resourceType: result.resource_type,
         });
       },
     );
 
     // Only the buffer goes to end() — the second argument is an *encoding*, so
-    // passing metadata there throws ERR_UNKNOWN_ENCODING. Cloudinary infers the
-    // format from the filename extension (see use_filename/filename_override).
+    // passing metadata there throws ERR_UNKNOWN_ENCODING.
     stream.on('error', reject);
     stream.end(buffer);
   });
@@ -129,8 +167,9 @@ const uploadFile = asyncHandler(async (req, res) => {
   const filename = (originalname || 'upload').trim() || 'upload';
 
   let asset;
+  const resourceType = resourceTypeFor(mimetype);
   try {
-    asset = await streamToCloudinary(buffer, filename);
+    asset = await streamToCloudinary(buffer, filename, resourceType);
   } catch (err) {
     // Cloudinary is an upstream dependency: a failure here is a 502, not our
     // bug, and its own error types are meaningless to the client. Logged because
@@ -146,9 +185,9 @@ const uploadFile = asyncHandler(async (req, res) => {
   // insert fails rather than creating a second unclaimed record for one asset.
   try {
     await query(
-      `INSERT INTO file_uploads (uploader_id, file_url, filename, mime_type, size_bytes)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [req.user.id, asset.url, filename, mimetype, size],
+      `INSERT INTO file_uploads (uploader_id, file_url, filename, mime_type, size_bytes, public_id, resource_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [req.user.id, asset.url, filename, mimetype, size, asset.publicId, asset.resourceType],
     );
   } catch (err) {
     if (err.code === '23505') {
@@ -170,4 +209,4 @@ const uploadFile = asyncHandler(async (req, res) => {
   }, 201);
 });
 
-module.exports = { uploadFile, ALLOWED_MIME_TYPES, MAX_UPLOAD_BYTES };
+module.exports = { uploadFile, resourceTypeFor, ALLOWED_MIME_TYPES, MAX_UPLOAD_BYTES };

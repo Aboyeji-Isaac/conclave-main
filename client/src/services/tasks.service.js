@@ -44,11 +44,15 @@ export async function listTasks({ roomId, status, assigneeId } = {}) {
  *
  * @param {{ roomId: string, sourceMessageId?: string, title: string, assigneeId?: string, dueDate?: string }} payload
  */
-export async function createTask({ roomId, sourceMessageId, title, assigneeId, dueDate }) {
+export async function createTask({ roomId, sourceMessageId, title, body, assigneeId, dueDate }) {
   const { data } = await api.post('/tasks', {
     roomId,
     sourceMessageId,
     title,
+    // Sent as null rather than omitted so an intentionally empty Notes field and
+    // a dialog that never offered one are the same thing server-side. This was
+    // collected in the dialog for a long time and never transmitted at all.
+    body: body ? body.trim() : null,
     assigneeId,
     // Sent as `YYYY-MM-DD`, the shape the controller returns from
     // to_char(due_date, 'YYYY-MM-DD') — so a round trip does not shift a date.

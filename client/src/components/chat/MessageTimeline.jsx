@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import IconArrowDown from '@/assets/icons/arrow-down.svg?react';
 import EmptyState from '../ui/EmptyState';
 import Spinner from '../ui/Spinner';
 import { annotateMessages, daySeparatorLabel } from '@/lib/messageMeta';
@@ -51,6 +52,8 @@ export default function MessageTimeline({
   onDelete,
   onPromote,
   onFlagTask,
+  onPin,
+  onUnpin,
   onToggleReaction,
 }) {
   const endRef = useRef(null);
@@ -115,10 +118,17 @@ export default function MessageTimeline({
 
   if (!messages.length) {
     return (
-      <EmptyState
-        title="Start the conversation"
-        description="Messages sent to this room will appear here."
-      />
+      // Fills the scroller row so the notice centres in the pane. Left bare,
+      // EmptyState is only `min-h-48`, which collapsed the row to 192px and left
+      // the composer floating in the space below it. `min-h-full` rather than
+      // `h-full` so a viewport too short for the notice scrolls instead of
+      // clipping the text.
+      <div className="flex min-h-full flex-col justify-center">
+        <EmptyState
+          title="Start the conversation"
+          description="Messages sent to this room will appear here."
+        />
+      </div>
     );
   }
 
@@ -152,6 +162,8 @@ export default function MessageTimeline({
               onDelete={onDelete}
               onPromote={onPromote}
               onFlagTask={onFlagTask}
+              onPin={onPin}
+              onUnpin={onUnpin}
               onToggleReaction={onToggleReaction}
             />
           </div>
@@ -178,8 +190,9 @@ export default function MessageTimeline({
           <button
             type="button"
             onClick={jumpToLatest}
-            className="pointer-events-auto absolute bottom-0 left-1/2 -translate-x-1/2 rounded-full border border-line bg-surface px-4 py-2 text-label text-ink shadow-modal transition-colors hover:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
+            className="pointer-events-auto absolute bottom-0 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-surface px-4 py-2 text-label text-ink shadow-modal transition-colors hover:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
           >
+            <IconArrowDown className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
             Jump to latest
           </button>
         </div>

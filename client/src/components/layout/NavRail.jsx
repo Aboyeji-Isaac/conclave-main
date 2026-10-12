@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import Avatar from '@/components/ui/Avatar';
 import Badge from '@/components/ui/Badge';
 import EmptyState from '@/components/ui/EmptyState';
+import Logo from '@/components/landing/Logo';
 import Spinner from '@/components/ui/Spinner';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChats } from '@/contexts/ChatsContext';
@@ -15,6 +16,7 @@ import IconMember from '@/assets/icons/member.svg?react';
 import IconNotify from '@/assets/icons/notify.svg?react';
 import IconRecent from '@/assets/icons/recent.svg?react';
 import IconSettings from '@/assets/icons/settings.svg?react';
+import IconSignOut from '@/assets/icons/sign-out.svg?react';
 import IconTasks from '@/assets/icons/tasks.svg?react';
 import IconThread from '@/assets/icons/thread.svg?react';
 
@@ -77,15 +79,23 @@ const primaryNav = [
  * @param {() => void} [onNavigate] - closes the mobile drawer after a click
  */
 export default function NavRail({ onNavigate }) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { rooms, isLoading, error, unreadTotal } = useChats();
   const { unreadCount } = useNotifications();
   const displayName = user?.display_name || 'Unknown user';
 
+  // Closing the drawer matters as much as signing out: on mobile the rail is
+  // an overlay, and leaving it open over a signed-out login screen is worse
+  // than not signing out at all.
+  function onSignOut() {
+    onNavigate?.();
+    logout();
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto pb-4 pt-6">
-      <NavLink to="/chats" onClick={onNavigate} className="px-6 text-h2 text-brand">
-        CONCLAVE
+      <NavLink to="/chats" onClick={onNavigate} className="px-6" aria-label="Conclave, home">
+        <Logo />
       </NavLink>
 
       <p className="mt-10 shrink-0 px-6 text-label uppercase text-muted">Workspace</p>
@@ -123,9 +133,9 @@ export default function NavRail({ onNavigate }) {
       <div className="mt-4 shrink-0">
         <div className="mx-3 border-t border-line" />
 
-        <NavLink to="/profile" onClick={onNavigate} className="mt-5 flex items-start gap-3 px-6">
-          <span className="h-10 w-10 shrink-0 rounded-full bg-line" aria-hidden="true" />
-          <span className="flex min-w-0 flex-col gap-1 pt-1">
+        <NavLink to="/profile" onClick={onNavigate} className="mt-5 flex items-center gap-3 px-6">
+          <Avatar name={displayName} src={user?.avatar_url} className="shrink-0" />
+          <span className="flex min-w-0 flex-col gap-1">
             <span className="truncate text-label text-ink">{displayName}</span>
             <span className="flex items-center gap-1.5">
               <span className="h-2 w-2 shrink-0 rounded-full bg-success" aria-hidden="true" />
@@ -151,6 +161,21 @@ export default function NavRail({ onNavigate }) {
           <IconSettings className="h-5 w-5 shrink-0" />
           Settings
         </NavLink>
+
+        {/*
+          Logout lives here rather than only on Profile because it is the one
+          footer action everybody needs and almost nobody goes looking for —
+          Profile is a form, and signing out from the bottom of a form is a
+          strange place to look for it.
+        */}
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="mx-3 mt-1 flex h-9 w-full items-center gap-3 rounded-lg pl-3 text-body text-ink transition-colors hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
+        >
+          <IconSignOut className="h-5 w-5 shrink-0" />
+          Log out
+        </button>
       </div>
     </div>
   );

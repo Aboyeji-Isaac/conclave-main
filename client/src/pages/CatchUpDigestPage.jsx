@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import EmptyState from '../components/ui/EmptyState';
+import Button from '../components/ui/Button';
 import Spinner from '../components/ui/Spinner';
-import { getUserDigest } from '../services/digest.service';
+import { getUserDigest, markDigestRead } from '../services/digest.service';
 
 // Type-to-label/colour mapping lives here, not in the fixtures — the backend
 // sends a bare `type`, never display copy. Five types exist on the server
@@ -55,6 +56,7 @@ export default function CatchUpDigestPage() {
   const [digest, setDigest] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isMarkingRead, setIsMarkingRead] = useState(false);
 
   useEffect(() => {
     setRoomHeader('Catch-up digest');
@@ -81,6 +83,20 @@ export default function CatchUpDigestPage() {
       active = false;
     };
   }, []);
+
+  // Clears every room at once. Marking per room would turn one page into a list
+  // of individual dismissals for something the digest already aggregates.
+  async function onMarkRead() {
+    setIsMarkingRead(true);
+    try {
+      await markDigestRead();
+      setDigest({ items: [], summary: { headline: digest.summary.headline, summary: digest.summary.summary } });
+    } catch (err) {
+      setError(err.response?.data?.message || 'Could not mark the digest as read.');
+    } finally {
+      setIsMarkingRead(false);
+    }
+  }
 
   if (isLoading) return <Spinner label="Loading your digest" />;
 
@@ -109,6 +125,18 @@ export default function CatchUpDigestPage() {
             <p className="text-label text-muted">SINCE YOU WERE AWAY</p>
             <p className="mt-3 text-h1 text-ink">{digest.summary.headline}</p>
             <p className="mt-3 text-body text-muted">{digest.summary.summary}</p>
+
+            {/* Explicit, because the pointer only moves here. Doing it on read
+                would mean a reload discarded a backlog you had not finished
+                through — and it is what made the old digest self-erasing. */}
+            <Button
+              variant="secondary"
+              onClick={onMarkRead}
+              disabled={isMarkingRead}
+              className="mt-5"
+            >
+              {isMarkingRead ? 'Marking…' : 'Mark as read'}
+            </Button>
           </div>
           <div className="mt-10 flex flex-col gap-5 pb-8">
             {items.map((item) => (

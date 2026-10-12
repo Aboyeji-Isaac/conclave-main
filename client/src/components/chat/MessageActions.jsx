@@ -6,7 +6,9 @@ import IconCompose from '@/assets/icons/compose.svg?react';
 import IconDecisions from '@/assets/icons/decisions.svg?react';
 import IconDelete from '@/assets/icons/delete.svg?react';
 import IconMore from '@/assets/icons/more.svg?react';
+import IconPin from '@/assets/icons/pin.svg?react';
 import IconReply from '@/assets/icons/reply.svg?react';
+import IconStar from '@/assets/icons/star.svg?react';
 import IconTasks from '@/assets/icons/tasks.svg?react';
 import PopoverMenu from '@/components/ui/PopoverMenu';
 
@@ -33,7 +35,19 @@ import PopoverMenu from '@/components/ui/PopoverMenu';
  * @param {object} message
  * @param {string} viewerId
  * @param {boolean} isAdmin - the viewer's role in this room
- * @param {{ onReply: Function, onEdit: Function, onDelete: Function, onPromote: Function, onFlagTask: Function }} handlers
+ * Pinning is offered here too, not only in the panel. The panel is for finding
+ * pins you already have; this is where a pin starts. A message you have to
+ * scroll back for to pin is one you will forget to pin.
+ *
+ *   Pin for everyone  the room-wide pin, shown in the panel
+ *   Bookmark for me   personal, and the only one removable from here, because
+ *                     the panel deliberately does not show personal bookmarks
+ *
+ * A room pin that belongs to somebody else is not offered at all — the server
+ * answers 409 naming the holder, but a menu item that can only ever fail is
+ * worse than no menu item.
+ *
+ * @param {{ onReply: Function, onEdit: Function, onDelete: Function, onPromote: Function, onFlagTask: Function, onPin: Function, onUnpin: Function }} handlers
  */
 export default function MessageActions({
   message,
@@ -44,6 +58,8 @@ export default function MessageActions({
   onDelete,
   onPromote,
   onFlagTask,
+  onPin,
+  onUnpin,
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -52,6 +68,15 @@ export default function MessageActions({
 
   if (message.is_deleted) return null;
 
+  // The `pins` object the server attaches to every message: `room` is shared
+  // truth, `mine` is this viewer's own pins. Both are needed to know which of
+  // the four pin actions apply.
+  const roomPin = message.pins?.room || null;
+  const myPins = message.pins?.mine || [];
+  const holdsRoomPin = myPins.includes('room') || roomPin?.user_id === viewerId;
+  // A room admin can take back somebody else's room pin, matching the server.
+  const mayUnpinRoom = holdsRoomPin || isAdmin;
+
   const items = [
     { key: 'reply', label: 'Reply', Icon: IconReply, onClick: onReply },
     ...(isMine
@@ -59,10 +84,36 @@ export default function MessageActions({
       : []),
     { key: 'promote', label: 'Promote to decision', Icon: IconDecisions, onClick: onPromote },
     { key: 'task', label: 'Flag as task', Icon: IconTasks, onClick: onFlagTask },
+    !roomPin && {
+      key: 'pin-room',
+      label: 'Pin for everyone',
+      Icon: IconPin,
+      onClick: () => onPin(message, 'room'),
+    },
+    roomPin && mayUnpinRoom && {
+      key: 'unpin-room',
+      label: 'Unpin for everyone',
+      Icon: IconPin,
+      onClick: () => onUnpin(message, 'room'),
+    },
+    !myPins.includes('user') && {
+      key: 'bookmark',
+      label: 'Bookmark for me',
+      Icon: IconStar,
+      onClick: () => onPin(message, 'user'),
+    },
+    myPins.includes('user') && {
+      key: 'unbookmark',
+      label: 'Remove my bookmark',
+      Icon: IconStar,
+      onClick: () => onUnpin(message, 'user'),
+    },
     ...(isMine || isAdmin
       ? [{ key: 'delete', label: 'Delete', Icon: IconDelete, onClick: onDelete, danger: true }]
       : []),
-  ];
+    // Spreading here rather than `.filter(Boolean)` inline: a false branch above
+    // is a skipped item, and skipping is cheaper to read than a filter.
+  ].filter(Boolean);
 
   return (
     <div className="relative">

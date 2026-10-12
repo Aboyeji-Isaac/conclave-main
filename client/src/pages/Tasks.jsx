@@ -97,6 +97,15 @@ function TaskCard({ task, onMove, disabled }) {
 
       <p className="mt-3 text-h2 text-ink [overflow-wrap:anywhere]">{task.title}</p>
 
+      {/* The notes the flag dialog collects. Rendered only when there are some:
+          most tasks are a title and nothing else, and an empty gap under every
+          card would make the board harder to scan than not having the field. */}
+      {task.body && (
+        <p className="mt-2 text-body leading-relaxed text-muted [overflow-wrap:anywhere]">
+          {task.body}
+        </p>
+      )}
+
       <p className="mt-4 text-metadata text-muted">
         {task.assignee_name ? `Assigned to ${task.assignee_name}` : 'Unassigned'}
         {due ? ` · Due ${due}` : ''}

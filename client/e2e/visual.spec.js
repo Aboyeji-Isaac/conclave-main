@@ -260,6 +260,32 @@ test.describe('static-audit suspicions, measured', () => {
   }
 
   /*
+   * "Jump to latest" floats at the bottom of the timeline. It shows exactly
+   * when the reader has scrolled up, and it sits at the bottom of the pane —
+   * which is where the action button of whichever message is currently lowest
+   * happens to be. That overlap is inherent to a floating pill, so rather than
+   * weaken the assertion, scroll the control clear of it first. These tests are
+   * about where the menu lands, not about the pill.
+   */
+  async function clearFloatingPill(trigger) {
+    await trigger
+      .evaluate((el) => {
+        const scroller = el.closest('div.overflow-y-auto');
+        if (!scroller) return;
+        // The pill is ~34px tall sitting 12px off the bottom, so it owns the
+        // last ~46px of the pane. Clear 64 rather than nudging by the measured
+        // shortfall, which can be under a pixel when the trigger is the lowest
+        // thing in the scroller.
+        const CLEAR = 64;
+        const box = el.getBoundingClientRect();
+        const pane = scroller.getBoundingClientRect();
+        const clearance = pane.bottom - box.bottom;
+        if (clearance < CLEAR) scroller.scrollTop += CLEAR - clearance;
+      })
+      .catch(() => {});
+  }
+
+  /*
    * Opens one trigger, measures the menu, closes. Kept separate so every menu
    * in the app can be put through the same check without repeating the
    * scroll/click/settle dance.
@@ -267,10 +293,19 @@ test.describe('static-audit suspicions, measured', () => {
   async function checkMenu(page, trigger, label) {
     await page.keyboard.press('Escape').catch(() => {});
     await trigger.scrollIntoViewIfNeeded().catch(() => {});
+    await clearFloatingPill(trigger);
     await trigger.click({ force: true }).catch(() => {});
     await page.waitForTimeout(220);
 
     const menu = page.locator('[role="menu"]').last();
+    // Check visibility with a short bound first. Without this, a menu that
+    // never opened makes `evaluate` wait for a node that is never going to
+    // appear, and the test dies on the 45s suite timeout with no explanation.
+    if (!(await menu.isVisible().catch(() => false))) {
+      reportClip(label, { clipped: true, menuLeft: 0, menuRight: 0, menuTop: 0, menuBottom: 0 });
+      return { clipped: true, reason: 'menu did not open (trigger covered or unclickable)' };
+    }
+
     const report = await menuClipReport(page, menu);
     reportClip(label, report);
     return report;

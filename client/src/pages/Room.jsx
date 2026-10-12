@@ -4,6 +4,7 @@ import FlagAsTaskDialog from '../components/chat/FlagAsTaskDialog';
 import MessageComposer from '../components/chat/MessageComposer';
 import MessageTimeline from '../components/chat/MessageTimeline';
 import PinnedDecisionStrip from '../components/chat/PinnedDecisionStrip';
+import PinnedMessagesPanel from '../components/chat/PinnedMessagesPanel';
 import PromoteToDecisionDialog from '../components/chat/PromoteToDecisionDialog';
 import RoomHeader from '../components/chat/RoomHeader';
 import Button from '../components/ui/Button';
@@ -73,6 +74,8 @@ export default function Room() {
     editMessage,
     removeMessage,
     toggleReaction,
+    pinMessage,
+    unpinMessage,
     typingUserIds,
     readPointers,
     deliveryIds,
@@ -133,6 +136,40 @@ export default function Room() {
     }
   };
 
+  // Both scopes go through the same two calls the panel makes, so a message
+  // pinned from the menu and one pinned from the panel are the same request and
+  // land in the same places.
+  const handlePin = (message, scope) => {
+    pinMessage(message.id, scope)
+      .then(() => {
+        toast({
+          title: scope === 'room' ? 'Pinned for everyone' : 'Bookmarked',
+          description:
+            scope === 'room'
+              ? 'It is now in the pinned messages panel.'
+              : 'Only you can see this bookmark.',
+          tone: 'success',
+        });
+      })
+      .catch((err) => {
+        toast({
+          title: 'Pin failed',
+          description: err.response?.data?.message || 'Could not pin this message.',
+          tone: 'error',
+        });
+      });
+  };
+
+  const handleUnpin = (message, scope) => {
+    unpinMessage(message.id, scope).catch((err) => {
+      toast({
+        title: 'Unpin failed',
+        description: err.response?.data?.message || 'Could not remove this pin.',
+        tone: 'error',
+      });
+    });
+  };
+
   const handleToggleReaction = (message, emoji) => {
     toggleReaction(message, emoji).catch((err) => {
       toast({
@@ -167,13 +204,37 @@ export default function Room() {
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[auto_1fr_auto] bg-surface">
-      <PinnedDecisionStrip roomId={roomId} />
+    <section className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] bg-surface">
+      {/*
+        Rows are addressed explicitly rather than by source order.
+        PinnedDecisionStrip returns null for any room with no pins, and a null
+        child is not a grid item — so auto-placement renumbered the remaining
+        two, putting the composer in the `1fr` row and the scroller in `auto`.
+        With no messages the scroller then collapsed to the empty state's
+        min-h-48 and the composer stretched over everything below it, floating
+        its own content at the top. Pinning row-start means the layout is the
+        same whether or not there are pins.
 
-      <div
-        ref={scrollContainerRef}
-        className="min-h-0 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      >
+        `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` floors at `auto`, so a
+        long transcript can push the row open past the pane. 0 is the same guard
+        as `min-h-0` on the scroller, stated on the track itself.
+      */}
+      {/* Row-start on both, for the reason in the note below: a null child is
+          not a grid item, so auto-placement would renumber the rows when either
+          strip is empty. */}
+      <div className="row-start-1 min-w-0">
+        <PinnedMessagesPanel
+          roomId={roomId}
+          isAdmin={myRole === 'admin'}
+          viewerId={viewerId}
+        />
+        <PinnedDecisionStrip roomId={roomId} />
+      </div>
+
+        <div
+          ref={scrollContainerRef}
+          className="row-start-2 min-h-0 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
         {/* No in-room catch-up digest. markSeen below advances this room's
             last_seen_at on open, and getRoomDigest filters against exactly that
             pointer — so a digest fetched here would always be empty. Catch-up
@@ -210,11 +271,14 @@ export default function Room() {
             onPromote={setPromoting}
             onFlagTask={setFlagging}
             onToggleReaction={handleToggleReaction}
+            onPin={handlePin}
+            onUnpin={handleUnpin}
           />
         )}
       </div>
 
       <MessageComposer
+        className="row-start-3"
         disabled={!isConnected}
         onSend={sendMessage}
         members={members}

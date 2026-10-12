@@ -859,7 +859,7 @@ dbTest('createTask returns the same shape listTasks returns', async () => {
   assert.deepEqual(
     Object.keys(task).sort(),
     [
-      'assignee_id', 'assignee_name', 'created_at', 'created_by', 'due_date',
+      'assignee_id', 'assignee_name', 'body', 'created_at', 'created_by', 'due_date',
       'id', 'room_id', 'room_name', 'room_slug', 'source_message_id',
       'status', 'title', 'updated_at',
     ],
@@ -1440,7 +1440,20 @@ dbTest('FALLBACK: a text mention notifies the named member but not the sender', 
       headers: { authorization: `Bearer ${bystander.token}` },
     })).text()),
   ).data;
-  assert.equal(bystanderList.unreadCount, 0, 'a room member who was not named gets nothing');
+  // Since phase 8 a room member who was not named is notified of the message —
+  // that was the point of writing new_message. What they must not get is a
+  // 'mention': the assertion is about the type, not about the row count, because
+  // the row count is deliberately no longer zero.
+  assert.equal(
+    bystanderList.notifications.filter((n) => n.type === 'mention').length,
+    0,
+    'a room member who was not named gets no mention',
+  );
+  assert.equal(
+    bystanderList.notifications.filter((n) => n.type === 'new_message').length,
+    1,
+    'they are told a message arrived, which is the new_message type working',
+  );
 });
 
 dbTest('FALLBACK: mention matching respects word boundaries', async () => {
@@ -1466,7 +1479,13 @@ dbTest('FALLBACK: mention matching respects word boundaries', async () => {
       headers: { authorization: `Bearer ${al.token}` },
     })).text()),
   ).data;
-  assert.equal(list.unreadCount, 0, '"@Alison" must not count as a mention of "Al"');
+  assert.equal(
+    list.notifications.filter((n) => n.type === 'mention').length,
+    0,
+    '"@Alison" must not count as a mention of "Al"',
+  );
+  // They are still told the message arrived — just not that they were named.
+  assert.equal(list.notifications.filter((n) => n.type === 'new_message').length, 1);
 });
 
 dbTest('a message without an @ writes no notification rows', async () => {
@@ -3350,4 +3369,1072 @@ dbTest('GET /decisions/:decisionId does not shadow the literal routes', async ()
   assert.equal(scoped.status, 200, 'the two-segment room route still matches');
   const rows = JSON.parse(await scoped.text()).data.decisions;
   assert.ok(rows.some((d) => d.id === created.id));
+});
+
+// --- Room membership management + user search + preferences (phase 7) --------
+//
+// Phase 7 made member management a screen, and the backend could not serve it:
+// `role` was only ever written at insert time, so the room creator was the sole
+// admin for the life of the room and nobody could be removed or promoted. These
+// cover the three endpoints that close that, plus the two supporting endpoints
+// the screens need.
+
+async function removeMemberVia(token, roomId, userId) {
+  return fetch(`${baseUrl}/api/rooms/${roomId}/members/${userId}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+}
+
+async function setMemberRoleVia(token, roomId, userId, role) {
+  return fetch(`${baseUrl}/api/rooms/${roomId}/members/${userId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ role }),
+  });
+}
+
+async function prefsVia(token, method = 'GET', body) {
+  return fetch(`${baseUrl}/api/users/me/preferences`, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+dbTest('a member leaves by removing themselves, and disappears from the room', async () => {
+  const me = await authedAccount('phase7-leaver@test.com');
+  const them = await authedAccount('phase7-leaver-them@test.com');
+  const room = await createRoomVia(me.token, { name: 'Leaving Room', memberIds: [them.userId] });
+
+  const res = await removeMemberVia(them.token, room.id, them.userId);
+  const body = await res.text();
+  assert.equal(res.status, 200, body);
+  assert.equal(JSON.parse(body).data.removed, true);
+
+  // Gone from the member list, which is the only place membership is read from.
+  const after = JSON.parse(
+    await (await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+      headers: { authorization: `Bearer ${me.token}` },
+    })).text()
+  ).data;
+  assert.ok(
+    !after.members.some((m) => m.id === them.userId),
+    'the member who left is no longer in the room'
+  );
+});
+
+dbTest('a non-admin cannot remove somebody else', async () => {
+  const admin = await authedAccount('phase7-rm-admin@test.com');
+  const member = await authedAccount('phase7-rm-member@test.com');
+  const target = await authedAccount('phase7-rm-target@test.com');
+  const room = await createRoomVia(admin.token, {
+    name: 'Removal Guard',
+    memberIds: [member.userId, target.userId],
+  });
+
+  const res = await removeMemberVia(member.token, room.id, target.userId);
+  assert.equal(res.status, 403, 'a plain member has no removal privilege');
+
+  // And the target is genuinely still there — a 403 must not have removed them.
+  const still = JSON.parse(
+    await (await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+      headers: { authorization: `Bearer ${admin.token}` },
+    })).text()
+  ).data;
+  assert.ok(still.members.some((m) => m.id === target.userId), 'the member was not removed');
+});
+
+dbTest('removing an unknown member and removing from a room you are not in are both 403', async () => {
+  const me = await authedAccount('phase7-rm-stranger@test.com');
+  const admin = await authedAccount('phase7-rm-insider@test.com');
+  const room = await createRoomVia(admin.token, { name: 'Closed Room' });
+
+  const stranger = await removeMemberVia(me.token, room.id, admin.userId);
+  assert.equal(stranger.status, 403, 'a non-member cannot remove anybody');
+
+  // Deliberately the same status as the one above: telling them apart would
+  // confirm the room id is real to somebody who cannot see it.
+  const unknown = await removeMemberVia(admin.token, room.id, '00000000-0000-4000-8000-000000000000');
+  assert.equal(unknown.status, 403, 'an unknown member is the same answer as a forbidden one');
+});
+
+dbTest('the last admin cannot be removed — that would orphan the room forever', async () => {
+  const only = await authedAccount('phase7-lastadmin@test.com');
+  const member = await authedAccount('phase7-lastadmin-other@test.com');
+  const room = await createRoomVia(only.token, { name: 'One Admin', memberIds: [member.userId] });
+
+  // `only` is the creator and therefore the sole admin.
+  const leave = await removeMemberVia(only.token, room.id, only.userId);
+  assert.equal(leave.status, 409, 'the only admin cannot walk out and strand the room');
+
+  const demote = await setMemberRoleVia(only.token, room.id, only.userId, 'member');
+  assert.equal(demote.status, 409, 'nor demote themselves out of the last admin slot');
+});
+
+dbTest('an admin can be promoted and demoted, and the room keeps an admin', async () => {
+  const admin = await authedAccount('phase7-role-admin@test.com');
+  const member = await authedAccount('phase7-role-member@test.com');
+  const room = await createRoomVia(admin.token, { name: 'Role Changes', memberIds: [member.userId] });
+
+  const promoted = await setMemberRoleVia(admin.token, room.id, member.userId, 'admin');
+  const promotedBody = await promoted.text();
+  assert.equal(promoted.status, 200, promotedBody);
+  assert.equal(JSON.parse(promotedBody).data.role, 'admin');
+
+  // Two admins now, so demoting one is allowed and leaves the room governable.
+  const demoted = await setMemberRoleVia(admin.token, room.id, member.userId, 'member');
+  assert.equal(demoted.status, 200, 'the second admin can step down while another remains');
+
+  // Role is genuinely persisted, not just echoed back.
+  const after = JSON.parse(
+    await (await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+      headers: { authorization: `Bearer ${admin.token}` },
+    })).text()
+  ).data;
+  assert.equal(after.members.find((m) => m.id === member.userId).role, 'member');
+});
+
+dbTest('only an admin may change a role, and the role value is validated', async () => {
+  const admin = await authedAccount('phase7-roleguard-admin@test.com');
+  const member = await authedAccount('phase7-roleguard-member@test.com');
+  const other = await authedAccount('phase7-roleguard-other@test.com');
+  const room = await createRoomVia(admin.token, {
+    name: 'Role Guard',
+    memberIds: [member.userId, other.userId],
+  });
+
+  const byMember = await setMemberRoleVia(member.token, room.id, other.userId, 'admin');
+  assert.equal(byMember.status, 403, 'a plain member cannot promote anyone');
+
+  const badValue = await setMemberRoleVia(admin.token, room.id, other.userId, 'superuser');
+  assert.equal(badValue.status, 400, 'role must be admin or member');
+
+  // Setting the role it already has is a no-op, not an error — a client
+  // rendering a role toggle should not have to know the current value first.
+  const same = await setMemberRoleVia(admin.token, room.id, member.userId, 'member');
+  assert.equal(same.status, 200, 'a no-op role change succeeds');
+});
+
+dbTest('the membership routes do not shadow the single-segment room route', async () => {
+  const me = await authedAccount('phase7-routes@test.com');
+  const room = await createRoomVia(me.token, { name: 'Route Order' });
+
+  // `/seen` is a literal and is registered after the new member routes; if a
+  // `/:roomId/members/:userId` handler had swallowed it, this would answer 400
+  // with "seen" in the roomId position.
+  const seen = await fetch(`${baseUrl}/api/rooms/${room.id}/seen`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(seen.status, 200, 'the literal /seen still matches');
+
+  const read = await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(read.status, 200, 'GET /:roomId still reads as a room');
+});
+
+dbTest('user search finds people by name and never returns an email', async () => {
+  const me = await authedAccount('phase7-search-me@test.com');
+  await authedAccount('phase7-search-target@test.com');
+
+  const res = await fetch(`${baseUrl}/api/users/search?q=search-target`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  const body = await res.text();
+  assert.equal(res.status, 200, body);
+  const { users } = JSON.parse(body).data;
+
+  assert.equal(users.length, 1, 'the search finds the account by its email');
+  const row = users[0];
+  assert.ok(row.id && row.display_name);
+  // The whole point of this endpoint: listUsers returns email to any caller,
+  // and a compose picker must not hand every address to anyone who can type.
+  assert.equal(row.email, undefined, 'search results carry no email');
+  assert.deepEqual(
+    Object.keys(row).sort(),
+    ['avatar_url', 'display_name', 'id'],
+    'search returns exactly the picker fields'
+  );
+});
+
+dbTest('an empty search returns nothing rather than the whole directory', async () => {
+  const me = await authedAccount('phase7-search-empty@test.com');
+
+  const res = await fetch(`${baseUrl}/api/users/search?q=`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  const body = await res.text();
+  assert.equal(res.status, 200, body);
+  assert.deepEqual(JSON.parse(body).data.users, [], 'a blank query is not a request for everyone');
+});
+
+dbTest('GET /users/search does not shadow the /me and / routes', async () => {
+  const me = await authedAccount('phase7-search-routes@test.com');
+
+  const meRes = await fetch(`${baseUrl}/api/users/me`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(meRes.status, 200, '/me still resolves to the caller, not to a search term');
+
+  const listRes = await fetch(`${baseUrl}/api/users`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(listRes.status, 200, 'the directory still resolves');
+});
+
+dbTest('preferences answer with defaults before anything is saved, and persist after', async () => {
+  const me = await authedAccount('phase7-prefs@test.com');
+
+  const initial = await prefsVia(me.token);
+  const initialBody = await initial.text();
+  assert.equal(initial.status, 200, initialBody);
+  const defaults = JSON.parse(initialBody).data;
+  assert.equal(defaults.activity_level, 'all');
+  assert.deepEqual(defaults.muted, {});
+  assert.equal(defaults.push_enabled, true);
+  assert.equal(defaults.updatedAt, null, 'defaults are not a saved state');
+
+  const saved = await prefsVia(me.token, 'PATCH', { activity_level: 'mentions', muted: { new_message: true } });
+  const savedBody = await saved.text();
+  assert.equal(saved.status, 200, savedBody);
+  assert.equal(JSON.parse(savedBody).data.activity_level, 'mentions');
+
+  const reread = JSON.parse(await (await prefsVia(me.token)).text()).data;
+  assert.equal(reread.activity_level, 'mentions', 'the change survived a reload');
+  assert.deepEqual(reread.muted, { new_message: true });
+  assert.ok(reread.updatedAt, 'a written row carries a timestamp');
+
+  // A partial update keeps what it did not mention.
+  const partial = await prefsVia(me.token, 'PATCH', { push_enabled: false });
+  assert.equal(partial.status, 200);
+  const merged = JSON.parse(await (await prefsVia(me.token)).text()).data;
+  assert.equal(merged.activity_level, 'mentions', 'the untouched field survived');
+  assert.equal(merged.push_enabled, false);
+});
+
+dbTest('preferences reject an unknown type, a bad level, and an empty body', async () => {
+  const me = await authedAccount('phase7-prefs-guard@test.com');
+
+  const empty = await prefsVia(me.token, 'PATCH', {});
+  assert.equal(empty.status, 400, 'an empty body must not look like a successful save');
+
+  const badLevel = await prefsVia(me.token, 'PATCH', { activity_level: 'loud' });
+  assert.equal(badLevel.status, 400, 'activity_level is a closed set');
+
+  // Validated by name against the notification allowlist rather than a CHECK
+  // constraint, because Postgres forbids subqueries in CHECK.
+  const badType = await prefsVia(me.token, 'PATCH', { muted: { telepathy: true } });
+  assert.equal(badType.status, 400, 'an unknown notification type is rejected by name');
+
+  const badValue = await prefsVia(me.token, 'PATCH', { muted: { mention: 'yes' } });
+  assert.equal(badValue.status, 400, 'a muted value must be a boolean');
+
+  const notObject = await prefsVia(me.token, 'PATCH', { muted: ['mention'] });
+  assert.equal(notObject.status, 400, 'muted must be a map, not an array');
+
+  // Nothing above should have written a row.
+  const after = JSON.parse(await (await prefsVia(me.token)).text()).data;
+  assert.equal(after.updatedAt, null, 'a rejected write leaves no row behind');
+});
+
+// --- Creating a DM without a room name (phase 8, wave 2) ---------------------
+//
+// `createRoom` required `name` unconditionally and checked it before it had
+// computed `roomType`, so `POST /rooms { type: 'dm', memberIds: [x] }` — which
+// is all the client can send, because there is no title to type for a one-to-one
+// — failed with a 400 every single time.
+
+async function createRoomRaw(token, payload) {
+  const res = await fetch(`${baseUrl}/api/rooms`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  return res;
+}
+
+dbTest('a DM can be created with no name — it is named after the other person', async () => {
+  const me = await authedAccount('wave2-dm-self@test.com');
+  const them = await authedAccount('wave2-dm-other@test.com');
+
+  const res = await createRoomRaw(me.token, { type: 'dm', memberIds: [them.userId] });
+  const body = await res.text();
+  assert.equal(res.status, 201, body);
+  const room = JSON.parse(body).data;
+
+  assert.equal(room.type, 'dm');
+  // The stored name is the other person's display name, not an empty string and
+  // not a placeholder the client had to invent.
+  assert.equal(room.name, 'Task Tester');
+  assert.ok(room.slug, 'a slug is still allocated, so the NOT NULL column holds');
+  assert.equal(room.members.length, 2, 'both people are in the room');
+  assert.equal(room.existing, undefined, 'a first DM is not reported as existing');
+});
+
+dbTest('a DM with an explicit name still uses it', async () => {
+  const me = await authedAccount('wave2-dm-named-self@test.com');
+  const them = await authedAccount('wave2-dm-named-other@test.com');
+
+  const res = await createRoomRaw(me.token, {
+    type: 'dm',
+    name: 'Explicit title',
+    memberIds: [them.userId],
+  });
+  const body = await res.text();
+  assert.equal(res.status, 201, body);
+  assert.equal(JSON.parse(body).data.name, 'Explicit title', 'a caller-supplied name is respected');
+});
+
+dbTest('a group still requires a name', async () => {
+  const me = await authedAccount('wave2-group-noname@test.com');
+  const them = await authedAccount('wave2-group-other@test.com');
+
+  const res = await createRoomRaw(me.token, { type: 'group', memberIds: [them.userId] });
+  assert.equal(res.status, 400, 'a group has no fallback name');
+  assert.match(JSON.parse(await res.text()).message, /Room name is required/);
+
+  // Nor when `type` is omitted and the single invitee would have inferred 'dm' —
+  // the inference happens, and the resulting DM is still allowed to be nameless.
+  const inferredDm = await createRoomRaw(me.token, { memberIds: [them.userId] });
+  assert.equal(inferredDm.status, 201, 'one invitee with no type is a DM, and needs no name');
+  await inferredDm.text();
+});
+
+dbTest('re-opening an existing DM pair with no name returns the same room', async () => {
+  const me = await authedAccount('wave2-dm-dedup-self@test.com');
+  const them = await authedAccount('wave2-dm-dedup-other@test.com');
+
+  const firstRes = await createRoomRaw(me.token, { type: 'dm', memberIds: [them.userId] });
+  const first = JSON.parse(await firstRes.text()).data;
+
+  const second = await createRoomRaw(me.token, { type: 'dm', memberIds: [them.userId] });
+  const body = await second.text();
+  assert.equal(second.status, 200, 'the pair already has a DM, so nothing is created');
+  const existing = JSON.parse(body).data;
+  assert.equal(existing.id, first.id, 'and it is the same room');
+  assert.equal(existing.existing, true);
+});
+
+// --- Attachment delivery proxy (phase 8, wave 3) -----------------------------
+//
+// Attachments used to link straight at res.cloudinary.com. Two problems, both
+// real: anybody holding a URL could download any file with no check they were in
+// the room, and on this account the delivery domain refuses everything that is
+// not a plain image (JPEG 200, PDF 401, ZIP 401). The proxy fixes access control
+// and fetches through Cloudinary's authenticated API, which those delivery rules
+// do not apply to.
+//
+// The streaming half needs Cloudinary, which the test database does not have,
+// so these cover what the test suite *can* reach: that membership is enforced,
+// that an outsider gets 404 rather than 403, and that an SVG cannot be served
+// inline. The end-to-end fetch was verified against the real account separately.
+
+async function seedAttachmentVia(token, { roomId, publicId, resourceType, filename, fileType }) {
+  const sent = await fetch(`${baseUrl}/api/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ roomId, content: `holding ${filename}` }),
+  });
+  const body = await sent.text();
+  assert.equal(sent.status, 201, body);
+  const message = JSON.parse(body).data;
+
+  // Written with SQL rather than the upload flow: that flow needs Cloudinary,
+  // and what is under test is the read path and its authorisation, not the
+  // upload. Mirrors the columns the claim step now copies through.
+  const { query } = require('../src/config/db');
+  const inserted = await query(
+    `INSERT INTO attachments (message_id, filename, file_url, file_type, size_bytes, public_id, resource_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
+    [
+      message.id,
+      filename,
+      `https://res.cloudinary.com/test/image/upload/v1/conclave/attachments/${filename}`,
+      fileType,
+      1024,
+      publicId,
+      resourceType,
+    ],
+  );
+  return { messageId: message.id, attachmentId: inserted.rows[0].id };
+}
+
+dbTest('an attachment is served to a member of its room', async () => {
+  const me = await authedAccount('wave3-member@test.com');
+  const room = await createRoomVia(me.token, { name: 'Attachment Room' });
+  const { attachmentId } = await seedAttachmentVia(me.token, {
+    roomId: room.id,
+    publicId: 'conclave/attachments/report',
+    resourceType: 'raw',
+    filename: 'report.pdf',
+    fileType: 'application/pdf',
+  });
+
+  const res = await fetch(`${baseUrl}/api/attachments/${attachmentId}`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  // The upstream fetch will fail without real Cloudinary credentials, but the
+  // request must get past authorisation — a 502 from the proxy proves it did,
+  // where a 404 proves the membership check rejected a legitimate member.
+  assert.ok(res.status === 502 || res.status === 200, `expected past auth, got ${res.status}`);
+  assert.notEqual(res.status, 404, 'a member of the room is not refused');
+  if (res.status === 502) await res.text();
+});
+
+dbTest('someone outside the room is refused — and it is 404, not 403', async () => {
+  const owner = await authedAccount('wave3-owner@test.com');
+  const outsider = await authedAccount('wave3-outsider@test.com');
+  const room = await createRoomVia(owner.token, { name: 'Private Attachments' });
+  const { attachmentId } = await seedAttachmentVia(owner.token, {
+    roomId: room.id,
+    publicId: 'conclave/attachments/secret',
+    resourceType: 'raw',
+    filename: 'secret.pdf',
+    fileType: 'application/pdf',
+  });
+
+  const res = await fetch(`${baseUrl}/api/attachments/${attachmentId}`, {
+    headers: { authorization: `Bearer ${outsider.token}` },
+  });
+  assert.equal(res.status, 404, 'membership is refused');
+  const body = await res.text();
+  assert.doesNotMatch(body, /only room admins|member of this room/i,
+    'the refusal must not say whether the caller was a member');
+});
+
+dbTest('an anonymous request cannot reach the proxy', async () => {
+  const me = await authedAccount('wave3-anon@test.com');
+  const room = await createRoomVia(me.token, { name: 'Anon Room' });
+  const { attachmentId } = await seedAttachmentVia(me.token, {
+    roomId: room.id, publicId: 'conclave/attachments/x', resourceType: 'raw',
+    filename: 'x.pdf', fileType: 'application/pdf',
+  });
+
+  const res = await fetch(`${baseUrl}/api/attachments/${attachmentId}`);
+  assert.equal(res.status, 401, 'the proxy is auth-gated like every other route');
+});
+
+dbTest('an unknown attachment id is a 404, and a malformed one a 400', async () => {
+  const me = await authedAccount('wave3-unknown@test.com');
+
+  const unknown = await fetch(`${baseUrl}/api/attachments/00000000-0000-4000-8000-000000000000`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(unknown.status, 404);
+  await unknown.text();
+
+  const malformed = await fetch(`${baseUrl}/api/attachments/not-a-uuid`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(malformed.status, 400, 'validateUuidParams rejects a non-UUID id');
+  await malformed.text();
+});
+
+dbTest('uploads record a resource_type of raw for documents, not image', async () => {
+  const { resourceTypeFor } = require('../src/controllers/upload.controller');
+
+  // `auto` filed PDFs under the image store, which is why an uploaded PDF could
+  // never be served back. The decision is now explicit and stored.
+  assert.equal(resourceTypeFor('application/pdf'), 'raw');
+  assert.equal(resourceTypeFor('application/zip'), 'raw');
+  assert.equal(resourceTypeFor('text/csv'), 'raw');
+  assert.equal(resourceTypeFor('image/png'), 'image');
+  assert.equal(resourceTypeFor('image/svg+xml'), 'image');
+});
+
+dbTest('a filename cannot smuggle a header break into Content-Disposition', async () => {
+  const { sanitiseFilename, deriveFromUrl } = require('../src/controllers/attachments.controller');
+
+  // Quotes and newlines are *removed* rather than replaced, so the value cannot
+  // end the quoted-string token early or split the header at all.
+  assert.equal(sanitiseFilename('a"b.pdf'), 'ab.pdf');
+  assert.equal(sanitiseFilename('two\r\nX-Injected: 1.pdf'), 'twoX-Injected_ 1.pdf',
+    'the newline is gone, so no second header can be introduced');
+  assert.equal(sanitiseFilename(''), 'download');
+  assert.equal(sanitiseFilename('../../etc/passwd'), '.._.._etc_passwd');
+  assert.equal(sanitiseFilename('normal name.pdf'), 'normal name.pdf',
+    'ordinary names are left alone');
+
+  // The pre-016 fallback: a delivery URL has to yield a usable public_id.
+  assert.deepEqual(
+    deriveFromUrl('https://res.cloudinary.com/test/raw/upload/v123/conclave/attachments/a.pdf'),
+    { publicId: 'conclave/attachments/a.pdf', resourceType: 'raw' },
+  );
+  assert.deepEqual(
+    deriveFromUrl('https://res.cloudinary.com/test/image/upload/v9/photo.jpg'),
+    { publicId: 'photo.jpg', resourceType: 'image' },
+  );
+  assert.equal(deriveFromUrl(null), null);
+});
+
+// --- Room editing + task notifications (phase 8, wave 3) ---------------------
+//
+// Two reported gaps: an admin could rename a room only by creating another one,
+// and flagging a message as a task told nobody at all.
+
+async function updateRoomVia(token, roomId, payload) {
+  return fetch(`${baseUrl}/api/rooms/${roomId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+dbTest('an admin can rename a room and set its description', async () => {
+  const admin = await authedAccount('wave3-edit-admin@test.com');
+  const room = await createRoomVia(admin.token, { name: 'Before the rename' });
+
+  const res = await updateRoomVia(admin.token, room.id, {
+    name: '  After the rename  ',
+    description: 'What this room is actually for.',
+  });
+  const body = await res.text();
+  assert.equal(res.status, 200, body);
+  const updated = JSON.parse(body).data;
+
+  assert.equal(updated.name, 'After the rename', 'the name is trimmed on the way in');
+  assert.equal(updated.description, 'What this room is actually for.');
+
+  // Persisted, and visible on a re-read rather than only echoed back.
+  const reread = JSON.parse(await (await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+    headers: { authorization: `Bearer ${admin.token}` },
+  })).text()).data;
+  assert.equal(reread.name, 'After the rename');
+  assert.equal(reread.description, 'What this room is actually for.');
+});
+
+dbTest('renaming does not change the slug', async () => {
+  const admin = await authedAccount('wave3-slug-admin@test.com');
+  const room = await createRoomVia(admin.token, { name: 'Original Title' });
+  const before = room.slug;
+
+  const res = await updateRoomVia(admin.token, room.id, { name: 'Completely Different' });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(await res.text()).data.slug, before,
+    'slug is a display handle allocated once, not a routing key');
+
+  // And a caller cannot smuggle one in through the body.
+  const smuggled = await updateRoomVia(admin.token, room.id, { slug: 'mine' });
+  assert.equal(smuggled.status, 400, 'slug is not an updatable field');
+  assert.match(JSON.parse(await smuggled.text()).message, /No updatable fields/);
+});
+
+dbTest('room edits are validated and admin-only', async () => {
+  const admin = await authedAccount('wave3-guard-admin@test.com');
+  const member = await authedAccount('wave3-guard-member@test.com');
+  const stranger = await authedAccount('wave3-guard-stranger@test.com');
+  const room = await createRoomVia(admin.token, { name: 'Guarded', memberIds: [member.userId] });
+
+  const byMember = await updateRoomVia(member.token, room.id, { name: 'Hijacked' });
+  assert.equal(byMember.status, 403, 'a plain member cannot edit the room');
+  await byMember.text();
+
+  const byStranger = await updateRoomVia(stranger.token, room.id, { name: 'Hijacked' });
+  assert.equal(byStranger.status, 403, 'a non-member is refused');
+  await byStranger.text();
+
+  const empty = await updateRoomVia(admin.token, room.id, { name: '   ' });
+  assert.equal(empty.status, 400, 'a room cannot be renamed to whitespace');
+  await empty.text();
+
+  const emptyBody = await updateRoomVia(admin.token, room.id, {});
+  assert.equal(emptyBody.status, 400, 'an empty body is an error, not a silent no-op');
+  await emptyBody.text();
+
+  const tooLong = await updateRoomVia(admin.token, room.id, { description: 'x'.repeat(1001) });
+  assert.equal(tooLong.status, 400, 'description is length-capped');
+  await tooLong.text();
+});
+
+dbTest('a DM reports the same display name from getRoom as from listRooms', async () => {
+  const me = await authedAccount('wave3-dm-one@test.com');
+  const them = await authedAccount('wave3-dm-other@test.com');
+  const room = await createRoomVia(me.token, { type: 'dm', memberIds: [them.userId] });
+
+  const detail = JSON.parse(await (await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  })).text()).data;
+  const listed = JSON.parse(await (await fetch(`${baseUrl}/api/rooms`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  })).text()).data.find((r) => r.id === room.id);
+
+  assert.equal(detail.display_name, 'Task Tester', 'getRoom derives the other member');
+  assert.equal(detail.display_name, listed.display_name, 'the two endpoints agree');
+});
+
+dbTest('assigning a task notifies the assignee with its title and room', async () => {
+  const author = await authedAccount('wave3-task-author@test.com');
+  const assignee = await authedAccount('wave3-task-assignee@test.com');
+  const room = await createRoomVia(author.token, { name: 'Task Room' });
+
+  // Bring the assignee into the room so the create-time membership check passes.
+  await fetch(`${baseUrl}/api/rooms/${room.id}/members`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${author.token}` },
+    body: JSON.stringify({ userId: assignee.userId }),
+  });
+
+  const created = await fetch(`${baseUrl}/api/tasks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${author.token}` },
+    body: JSON.stringify({
+      roomId: room.id,
+      title: 'Ship the thing',
+      body: 'With the notes attached.',
+      assigneeId: assignee.userId,
+    }),
+  });
+  const body = await created.text();
+  assert.equal(created.status, 201, body);
+  assert.equal(JSON.parse(body).data.body, 'With the notes attached.', 'notes are stored');
+
+  const bell = (await (await fetch(`${baseUrl}/api/notifications`, {
+    headers: { authorization: `Bearer ${assignee.token}` },
+  })).json()).data;
+
+  const taskNotice = bell.notifications.find((n) => n.type === 'task');
+  assert.ok(taskNotice, 'the assignee has a task notification');
+  assert.equal(taskNotice.context.task_title, 'Ship the thing', 'the title travels in its own field');
+  assert.equal(taskNotice.context.room_name, 'Task Room');
+  assert.equal(taskNotice.context.actor_name, 'Task Tester', 'and names who assigned it');
+  assert.equal(taskNotice.context.message_preview, null,
+    'a task title is not a sentence anyone said, so it does not borrow the preview field');
+});
+
+dbTest('a self-assigned or unassigned task notifies nobody, and does not fail', async () => {
+  const me = await authedAccount('wave3-task-self@test.com');
+  const room = await createRoomVia(me.token, { name: 'Solo Tasks' });
+
+  const self = await fetch(`${baseUrl}/api/tasks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, title: 'Mine to do', assigneeId: me.userId }),
+  });
+  const selfBody = await self.text();
+  assert.equal(self.status, 201, selfBody + ' — createNotification would reject actor===recipient');
+
+  const none = await fetch(`${baseUrl}/api/tasks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, title: 'Nobody is doing this' }),
+  });
+  assert.equal(none.status, 201);
+  await none.text();
+
+  const bell = (await (await fetch(`${baseUrl}/api/notifications`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  })).json()).data;
+  // The room_invite row from createRoom's membership is a different type; what
+  // matters is that no task row was written to the actor's own bell.
+  assert.equal(bell.notifications.filter((n) => n.type === 'task').length, 0,
+    'neither case notifies the actor');
+});
+
+dbTest('adding a member tells the members who were already there', async () => {
+  const inviter = await authedAccount('wave3-join-inviter@test.com');
+  const already = await authedAccount('wave3-join-already@test.com');
+  const newcomer = await authedAccount('wave3-join-new@test.com');
+  const room = await createRoomVia(inviter.token, {
+    name: 'Join Notices', memberIds: [already.userId],
+  });
+
+  const res = await fetch(`${baseUrl}/api/rooms/${room.id}/members`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${inviter.token}` },
+    body: JSON.stringify({ userId: newcomer.userId }),
+  });
+  assert.equal(res.status, 201);
+  await res.text();
+
+  const existingBell = (await (await fetch(`${baseUrl}/api/notifications`, {
+    headers: { authorization: `Bearer ${already.token}` },
+  })).json()).data;
+  assert.ok(
+    existingBell.notifications.some((n) => n.type === 'member_joined'),
+    'member_joined was allowlisted but never written',
+  );
+
+  // The newcomer is told they were invited, and not that they joined.
+  const newcomerBell = (await (await fetch(`${baseUrl}/api/notifications`, {
+    headers: { authorization: `Bearer ${newcomer.token}` },
+  })).json()).data;
+  assert.ok(newcomerBell.notifications.some((n) => n.type === 'room_invite'));
+  assert.equal(newcomerBell.notifications.filter((n) => n.type === 'member_joined').length, 0,
+    'the person who arrived is not told they arrived');
+});
+
+// ---------- message pins (phase 8, wave 5) ----------
+
+async function pinMessageVia(token, messageId, scope) {
+  return fetch(`${baseUrl}/api/messages/${messageId}/pin`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ scope }),
+  });
+}
+
+async function unpinMessageVia(token, messageId, scope) {
+  return fetch(`${baseUrl}/api/messages/${messageId}/pin/${scope}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+}
+
+async function listPinnedVia(token, roomId) {
+  const res = await fetch(`${baseUrl}/api/messages/room/${roomId}/pinned`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const body = await res.text();
+  return { status: res.status, body, json: () => JSON.parse(body) };
+}
+
+async function findMessageVia(token, roomId, messageId) {
+  const res = await fetch(`${baseUrl}/api/messages/room/${roomId}?limit=100`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  // Read once. Reading it for the assertion message and again to parse gives
+  // "Body is unusable" on the second call, so the body is taken first and the
+  // status assertion gets it as its message.
+  const body = await res.text();
+  assert.equal(res.status, 200, body);
+  const { messages } = JSON.parse(body).data;
+  return messages.find((m) => m.id === messageId);
+}
+
+dbTest('a personal message bookmark is visible only to its author', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-user-me@test.com');
+  const them = await authedAccount('mpin-user-them@test.com');
+  const room = await createRoomVia(me.token, { name: `Message Pin User ${run}`, memberIds: [them.userId] });
+  const message = await sendVia(me.token, room.id, 'A number worth keeping');
+
+  const res = await pinMessageVia(me.token, message.id, 'user');
+  assert.equal(res.status, 200, await res.text());
+
+  const mine = await findMessageVia(me.token, room.id, message.id);
+  assert.deepEqual(mine.pins.mine, ['user'], 'the author sees their own bookmark');
+  assert.equal(mine.pins.room, null, 'a personal pin is never a room pin');
+
+  const theirs = await findMessageVia(them.token, room.id, message.id);
+  assert.deepEqual(theirs.pins.mine, [], 'another member does not inherit the bookmark');
+  assert.equal(theirs.pins.room, null);
+
+  // The panel lists room pins only, so a private bookmark is not even there.
+  const theirsPanel = await listPinnedVia(them.token, room.id);
+  assert.equal(theirsPanel.status, 200);
+  assert.deepEqual(theirsPanel.json().data.messages, [], 'a bookmark is not listed for anyone');
+});
+
+dbTest('a room pin on a message is visible to every member and names its author', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-room-me@test.com');
+  const them = await authedAccount('mpin-room-them@test.com');
+  const room = await createRoomVia(me.token, { name: `Message Pin Room ${run}`, memberIds: [them.userId] });
+  const message = await sendVia(me.token, room.id, 'Deploy is at 14:00');
+
+  const res = await pinMessageVia(me.token, message.id, 'room');
+  assert.equal(res.status, 200, await res.text());
+
+  const theirs = await findMessageVia(them.token, room.id, message.id);
+  assert.ok(theirs.pins.room, 'the other member sees the room pin');
+  assert.equal(theirs.pins.room.user_id, me.userId);
+  assert.equal(typeof theirs.pins.room.display_name, 'string');
+  assert.deepEqual(theirs.pins.mine, [], 'seeing it does not make it theirs');
+
+  const panel = await listPinnedVia(them.token, room.id);
+  assert.equal(panel.status, 200);
+  const ids = panel.json().data.messages.map((m) => m.id);
+  assert.deepEqual(ids, [message.id], 'the panel lists exactly the pinned message');
+  // The panel renders the same message component as the timeline, so it has to
+  // arrive with the fields that component reads.
+  const [listed] = panel.json().data.messages;
+  assert.ok(listed.sender_name, 'the panel row names its sender');
+  assert.ok(listed.created_at, 'the panel row is timestamped');
+  assert.ok(listed.reactions, 'the panel row carries its reactions');
+});
+
+dbTest('a second room pin of one message is refused and names the holder', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-hold-me@test.com');
+  const them = await authedAccount('mpin-hold-them@test.com');
+  const room = await createRoomVia(me.token, { name: `Message Pin Held ${run}`, memberIds: [them.userId] });
+  const message = await sendVia(me.token, room.id, 'Only one of us gets this');
+
+  assert.equal((await pinMessageVia(me.token, message.id, 'room')).status, 200);
+
+  const second = await pinMessageVia(them.token, message.id, 'room');
+  assert.equal(second.status, 409, 'the second pinner is refused rather than taking over');
+
+  // The holder did not change underneath them.
+  const stillMine = await findMessageVia(me.token, room.id, message.id);
+  assert.equal(stillMine.pins.room.user_id, me.userId, 'the original pinner kept the pin');
+});
+
+dbTest('re-pinning is idempotent rather than a duplicate row', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-idem@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Idem' });
+  const message = await sendVia(me.token, room.id, 'Twice is not twice');
+
+  assert.equal((await pinMessageVia(me.token, message.id, 'user')).status, 200);
+  assert.equal((await pinMessageVia(me.token, message.id, 'user')).status, 200);
+
+  const { rows } = await query(
+    `SELECT count(*)::int AS n FROM message_pins WHERE message_id = $1 AND scope = 'user'`,
+    [message.id],
+  );
+  assert.equal(rows[0].n, 1, 'still exactly one bookmark, not two');
+});
+
+dbTest('only the pinner or a room admin can unpin somebody else’s room pin', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-admin-me@test.com');
+  const them = await authedAccount('mpin-admin-them@test.com');
+  const room = await createRoomVia(me.token, { name: `Message Pin Admin ${run}`, memberIds: [them.userId] });
+  const message = await sendVia(them.token, room.id, 'Admin takes this back');
+
+  assert.equal((await pinMessageVia(them.token, message.id, 'room')).status, 200);
+
+  const byOther = await unpinMessageVia(me.token, message.id, 'room');
+  assert.equal(byOther.status, 200, 'the room admin may unpin it');
+
+  const panel = await listPinnedVia(them.token, room.id);
+  assert.deepEqual(panel.json().data.messages, [], 'and it leaves the panel');
+
+  // Re-pinned by the non-admin, an admin can take it back; a plain member cannot.
+  assert.equal((await pinMessageVia(them.token, message.id, 'room')).status, 200);
+  const third = await authedAccount('mpin-admin-third@test.com');
+  const byPlain = await unpinMessageVia(third.token, message.id, 'room');
+  assert.equal(byPlain.status, 403, 'a non-member non-admin cannot');
+});
+
+dbTest('a stranger cannot pin, unpin, or list a room’s pins', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-priv-me@test.com');
+  const outsider = await authedAccount('mpin-priv-out@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Private' });
+  const message = await sendVia(me.token, room.id, 'Not for you');
+
+  const pin = await pinMessageVia(outsider.token, message.id, 'room');
+  assert.equal(pin.status, 403, 'a non-member cannot pin');
+
+  assert.equal((await pinMessageVia(me.token, message.id, 'room')).status, 200);
+  const unpin = await unpinMessageVia(outsider.token, message.id, 'room');
+  assert.equal(unpin.status, 403, 'a non-member cannot unpin');
+
+  const panel = await listPinnedVia(outsider.token, room.id);
+  assert.equal(panel.status, 403, 'a non-member cannot list them');
+});
+
+dbTest('a bad pin scope is a 400, not a silently ignored pin', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-scope@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Scope' });
+  const message = await sendVia(me.token, room.id, 'Scope check');
+
+  const res = await pinMessageVia(me.token, message.id, 'everyone');
+  assert.equal(res.status, 400, await res.text());
+});
+
+dbTest('unpinning a pin that is not there succeeds with nothing to report', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-absent@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Absent' });
+  const message = await sendVia(me.token, room.id, 'Never pinned');
+
+  const res = await unpinMessageVia(me.token, message.id, 'room');
+  assert.equal(res.status, 200, 'a retried unpin is not a failure');
+  const payload = JSON.parse(await res.text()).data;
+  assert.equal(payload.unpinned, false, 'and it says plainly that nothing was removed');
+});
+
+dbTest('a pinned message leaves the panel when it is deleted', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-deleted@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Deleted' });
+  const message = await sendVia(me.token, room.id, 'Here for now');
+
+  assert.equal((await pinMessageVia(me.token, message.id, 'room')).status, 200);
+  assert.equal((await listPinnedVia(me.token, room.id)).json().data.messages.length, 1);
+
+  const del = await fetch(`${baseUrl}/api/messages/${message.id}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(del.status, 200, await del.text());
+
+  const after = await listPinnedVia(me.token, room.id);
+  assert.deepEqual(after.json().data.messages, [], 'a deleted message is not still pinned');
+});
+
+dbTest('pinning publishes message:pinned and message:unpinned', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-socket@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Socket' });
+  const message = await sendVia(me.token, room.id, 'Tell the room');
+
+  const { captured, io } = captureEmitIo();
+  const app = require('../src/app');
+  const previous = app.get('io');
+  app.set('io', io);
+  try {
+    assert.equal((await pinMessageVia(me.token, message.id, 'room')).status, 200);
+    assert.equal((await unpinMessageVia(me.token, message.id, 'room')).status, 200);
+  } finally {
+    app.set('io', previous);
+  }
+
+  const events = captured.map((c) => c.event);
+  assert.ok(events.includes('message:pinned'), `expected message:pinned in ${events.join(', ')}`);
+  assert.ok(events.includes('message:unpinned'), `expected message:unpinned in ${events.join(', ')}`);
+
+  const pinnedEvent = captured.find((c) => c.event === 'message:pinned');
+  assert.equal(pinnedEvent.payload.message.id, message.id, 'the payload is the message itself');
+  assert.equal(pinnedEvent.payload.scope, 'room');
+  assert.ok(pinnedEvent.payload.message.pins.room, 'carrying the shared pin, not a per-viewer delta');
+});
+
+dbTest('pins travel with a message that has just been sent', async () => {
+  const run = Date.now();
+  const me = await authedAccount('mpin-shape@test.com');
+  const room = await createRoomVia(me.token, { name: 'Message Pin Shape' });
+  const message = await sendVia(me.token, room.id, 'Shape check');
+
+  // Every read path attaches pins; if one forgot, the client would render a
+  // message whose menu offers to unpin something it does not know about.
+  assert.deepEqual(message.pins, { room: null, mine: [] }, 'a newly sent message carries the field');
+});
+
+// ---------- digest read pointer (phase 8, wave 4) ----------
+
+async function getDigestVia(token) {
+  const res = await fetch(`${baseUrl}/api/digest`, { headers: { authorization: `Bearer ${token}` } });
+  const body = await res.text();
+  assert.equal(res.status, 200, body);
+  return JSON.parse(body).data;
+}
+
+dbTest('opening a room does not empty the digest; marking it read does', async () => {
+  const run = Date.now();
+  const me = await authedAccount('digest-open-me@test.com');
+  const them = await authedAccount('digest-open-them@test.com');
+  const room = await createRoomVia(me.token, { name: `Digest Open ${run}`, memberIds: [them.userId] });
+  await sendVia(them.token, room.id, 'Something worth catching up on');
+
+  const before = await getDigestVia(me.token);
+  assert.ok(before.items.length > 0, 'the backlog is reported');
+
+  // The regression this guards: reading a room used to move the same pointer
+  // the digest reported on, so simply visiting the room silently emptied it.
+  // GET /rooms/:id advances last_seen_at and must leave the digest alone.
+  const roomRes = await fetch(`${baseUrl}/api/rooms/${room.id}`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  assert.equal(roomRes.status, 200, await roomRes.text());
+
+  const afterVisit = await getDigestVia(me.token);
+  assert.ok(afterVisit.items.length > 0, 'visiting the room did not empty the digest');
+
+  const marked = await fetch(`${baseUrl}/api/digest/read`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({}),
+  });
+  assert.equal(marked.status, 200, await marked.text());
+
+  const afterMark = await getDigestVia(me.token);
+  assert.equal(afterMark.items.length, 0, 'marking it read does empty it');
+
+  // And the room's own activity digest follows the same pointer.
+  const roomDigest = await fetch(`${baseUrl}/api/digest/room/${room.id}`, {
+    headers: { authorization: `Bearer ${me.token}` },
+  });
+  const roomItems = JSON.parse(await roomDigest.text()).data.items;
+  assert.equal(roomItems.length, 0, 'the per-room digest moved with it');
+});
+
+dbTest('marking one room read leaves the other rooms’ backlogs alone', async () => {
+  const me = await authedAccount('digest-scope-me@test.com');
+  // A two-member room is a DM, and creating one is idempotent in the pair — so
+  // a second room with the same counterpart returns the first one (200) instead
+  // of a new room. Each room therefore gets its own counterpart.
+  const first = await authedAccount('digest-scope-first@test.com');
+  const second = await authedAccount('digest-scope-second@test.com');
+  const run = Date.now();
+  const one = await createRoomVia(me.token, { name: `Digest One ${run}`, memberIds: [first.userId] });
+  const two = await createRoomVia(me.token, { name: `Digest Two ${run}`, memberIds: [second.userId] });
+  await sendVia(first.token, one.id, 'In the first room');
+  await sendVia(second.token, two.id, 'In the second room');
+
+  const res = await fetch(`${baseUrl}/api/digest/read`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: one.id }),
+  });
+  assert.equal(res.status, 200, await res.text());
+
+  const roomIds = (await getDigestVia(me.token)).items.map((item) => item.room_id);
+  assert.ok(!roomIds.includes(one.id), 'the marked room is gone');
+  assert.ok(roomIds.includes(two.id), 'the other room is untouched — the pointer is per room');
+});
+
+dbTest('a message notifies a member who is not present, but not one who is', async (t) => {
+  // The one behaviour here that genuinely needs Redis. connectRedis() is called
+  // by server.js, which this harness bypasses in order to listen on an
+  // ephemeral port — so without this the client is closed,
+  // getRoomOnlineUsers returns [], and the suppression asserted below would
+  // pass for the wrong reason. Skipped rather than silently green if there is
+  // no Redis to talk to.
+  const { redisClient, connectRedis } = require('../src/config/redis');
+  const { userJoinedRoom, userLeftRoom } = require('../src/services/presence.service');
+  const connectedHere = !redisClient.isOpen;
+  if (connectedHere) {
+    try {
+      await connectRedis();
+    } catch {
+      /* the skip below reports it */
+    }
+  }
+  if (!redisClient.isOpen) {
+    t.skip('Redis is unavailable, so room-presence suppression cannot be exercised');
+    return;
+  }
+
+  try {
+    const sender = await authedAccount('digest-online-sender@test.com');
+    const present = await authedAccount('digest-online-present@test.com');
+    const away = await authedAccount('digest-online-away@test.com');
+    const room = await createRoomVia(sender.token, {
+      name: `Digest Online ${Date.now()}`,
+      memberIds: [present.userId, away.userId],
+    });
+
+    // Added the way joining a room does it, so the service reads a genuinely
+    // populated set rather than a stub.
+    await userJoinedRoom(present.userId, room.id);
+    await sendVia(sender.token, room.id, 'Are you there?');
+
+    const bell = (token) => fetch(`${baseUrl}/api/notifications`, {
+      headers: { authorization: `Bearer ${token}` },
+    }).then((r) => r.json()).then((b) => b.data);
+    const count = (token, type) => bell(token).then((d) => d.notifications.filter((n) => n.type === type).length);
+
+    assert.equal(await count(away.token, 'new_message'), 1,
+      'somebody not looking at the room is told a message arrived');
+    assert.equal(await count(present.token, 'new_message'), 0,
+      'somebody already looking at the room is not — they can see it happen');
+    assert.equal(await count(sender.token, 'new_message'), 0,
+      'the sender is not notified of their own message');
+
+    await userLeftRoom(present.userId, room.id);
+  } finally {
+    // Left open, the client would keep the test process alive after the suite.
+    if (connectedHere) await redisClient.quit();
+  }
 });

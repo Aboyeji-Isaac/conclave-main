@@ -65,7 +65,7 @@ function renderContent(text) {
  * @param {string} roomId
  * @param {object|null} replyTarget - the replied-to message, when it is loaded
  * @param {{ pendingIds: Set, failedIds: Set }} deliveryIds
- * @param {{ onReply: Function, onEdit: Function, onDelete: Function, onPromote: Function, onFlagTask: Function, onToggleReaction: Function }} handlers
+ * @param {{ onReply: Function, onEdit: Function, onDelete: Function, onPromote: Function, onFlagTask: Function, onToggleReaction: Function, onPin: Function, onUnpin: Function }} handlers
  */
 export default function Message({
   message,
@@ -80,6 +80,8 @@ export default function Message({
   onDelete,
   onPromote,
   onFlagTask,
+  onPin,
+  onUnpin,
   onToggleReaction,
 }) {
   const { isOnlineIn } = usePresence();
@@ -191,6 +193,8 @@ export default function Message({
           onDelete={() => onDelete(message)}
           onPromote={() => onPromote(message)}
           onFlagTask={() => onFlagTask(message)}
+          onPin={onPin}
+          onUnpin={onUnpin}
         />
       </div>
     </article>

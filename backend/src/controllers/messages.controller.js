@@ -10,6 +10,7 @@ const {
   removeReaction,
 } = require("../services/message.service");
 const { assertAllowedEmoji, attachReactions } = require("../services/reaction.service");
+const { attachPins: attachMessagePins, pinMessage, unpinMessage, listRoomPins } = require("../services/messagePin.service");
 
 const PAGE_SIZE = 50;
 
@@ -129,7 +130,10 @@ const listMessages = asyncHandler(async (req, res) => {
 
   // 3. Attach reactions, then return with the cursor for the next page.
   //    One extra query for the whole page, not one per message.
-  const messages = await attachReactions(result.rows, req.user.id);
+  const messages = await attachMessagePins(
+    await attachReactions(result.rows, req.user.id),
+    req.user.id,
+  );
   const last = messages[messages.length - 1];
   const nextCursor =
     messages.length === PAGE_SIZE && last ? `${last.created_at}|${last.id}` : null;
@@ -188,7 +192,10 @@ async function getMessagePayload(messageId, viewerId) {
     throw new ApiError(404, "Message not found");
   }
 
-  const [message] = await attachReactions(result.rows, viewerId);
+  const [message] = await attachMessagePins(
+    await attachReactions(result.rows, viewerId),
+    viewerId,
+  );
   return message;
 }
 
@@ -278,7 +285,10 @@ const searchMessages = asyncHandler(async (req, res) => {
   );
 
   return ok(res, {
-    messages: await attachReactions(result.rows, req.user.id),
+    messages: await attachMessagePins(
+      await attachReactions(result.rows, req.user.id),
+      req.user.id,
+    ),
     query: q.trim(),
   });
 });
@@ -366,12 +376,62 @@ const removeReactionHandler = asyncHandler(async (req, res) => {
   return ok(res, message);
 });
 
-module.exports = {
-  sendMessage,
-  listMessages,
-  searchMessages,
-  editMessage: editMessageHandler,
-  deleteMessage: deleteMessageHandler,
-  addReaction: addReactionHandler,
-  removeReaction: removeReactionHandler,
-};
+
+
+// ---------- pinMessage / unpinMessage / listPinnedMessages ----------
+// Three routes over the same service decisionPin.service uses for decisions.
+//
+// Authorisation lives in the service rather than the handler because both
+// scopes need the same two facts — "are you in this message's room" and "are
+// you the pinner or an admin" — and duplicating them here is how the decision
+// and message versions of this rule drift apart.
+//
+// Removing an absent pin answers 200 with `unpinned: false` rather than 404,
+// matching removeReaction and unpinDecision: a retried request is not a failure.
+
+// PUT /messages/:messageId/pin   { scope }
+const pinMessageHandler = asyncHandler(async (req, res) => {
+  const { messageId } = req.params;
+  const message = await pinMessage({
+    messageId,
+    userId: req.user.id,
+    scope: req.body?.scope,
+    io: req.app.get('io'),
+  });
+  return ok(res, message);
+});
+
+// DELETE /messages/:messageId/pin/:scope
+const unpinMessageHandler = asyncHandler(async (req, res) => {
+  const { messageId, scope } = req.params;
+  const message = await unpinMessage({
+    messageId,
+    userId: req.user.id,
+    scope,
+    io: req.app.get('io'),
+  });
+  return ok(res, message || { id: messageId, pins: { room: null, mine: [] }, unpinned: false });
+});
+
+// GET /messages/room/:roomId/pinned
+//
+// Membership is checked here rather than in the service, because this is the
+// one path that can name a room without a message to attach it to.
+const listPinnedMessages = asyncHandler(async (req, res) => {
+  const { roomId } = req.params;
+
+  const membership = await query(
+    `SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2`,
+    [roomId, req.user.id],
+  );
+  if (membership.rows.length === 0) {
+    // 403 rather than 404 here: the room id is the caller's to know, they only
+    // asked for a room they are not in. This is the same answer getRoomDigest
+    // gives, and the opposite of getDecision's — see the note there.
+    throw new ApiError(403, 'You are not a member of this room');
+  }
+
+  return ok(res, { messages: await listRoomPins(roomId, req.user.id) });
+});
+
+module.exports = { sendMessage, listMessages, searchMessages, editMessage: editMessageHandler, deleteMessage: deleteMessageHandler, addReaction: addReactionHandler, removeReaction: removeReactionHandler, pinMessageHandler, unpinMessageHandler, listPinnedMessages };

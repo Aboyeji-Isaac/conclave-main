@@ -1,5 +1,5 @@
 import { api } from '../lib/api';
-import { isDevAuthBypass, previewMessages } from '../config/devPreview';
+import { isDevAuthBypass, previewMessages, previewPinnedMessages } from '../config/devPreview';
 
 export async function listMessages(roomId, before) {
   if (isDevAuthBypass) {
@@ -82,4 +82,42 @@ export async function uploadFile(file) {
   form.append('file', file);
   const { data } = await api.post('/upload', form);
   return data.data;
+}
+
+/**
+ * Pin a message, in one of two scopes.
+ *
+ *   'room'  everyone in the room sees it, in the panel under the room header.
+ *           At most one per message: a second person pinning gets a 409 naming
+ *           who holds it, rather than silently taking it over.
+ *   'user'  a personal bookmark nobody else is told about.
+ *
+ * PUT is idempotent for your own pin — a repeat updates pinned_at rather than
+ * failing — which is why a double-tap on "Pin to room" is not a support ticket.
+ */
+export async function pinMessage(messageId, scope) {
+  if (isDevAuthBypass) return { id: messageId, pins: { room: null, mine: [scope] } };
+  const { data } = await api.put(`/messages/${messageId}/pin`, { scope });
+  return data.data;
+}
+
+/**
+ * Remove a pin. Removing one that is not there succeeds with `unpinned: false`
+ * rather than 404 — a retried request is not a failure.
+ */
+export async function unpinMessage(messageId, scope) {
+  if (isDevAuthBypass) return { id: messageId, pins: { room: null, mine: [] } };
+  const { data } = await api.delete(`/messages/${messageId}/pin/${scope}`);
+  return data.data;
+}
+
+/** Every room-wide pin in a room, oldest first. Personal bookmarks are not listed. */
+export async function listPinnedMessages(roomId) {
+  if (isDevAuthBypass) {
+    return previewPinnedMessages
+      .filter((message) => message.room_id === roomId)
+      .map((message) => ({ ...message, room_id: roomId }));
+  }
+  const { data } = await api.get(`/messages/room/${roomId}/pinned`);
+  return data.data.messages;
 }

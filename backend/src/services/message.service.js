@@ -2,7 +2,9 @@ const { pool, query } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const { notifyAndEmit, emitChatUpdated } = require('./notification.service');
 const { isMentioned } = require('./mention.service');
+const { getRoomOnlineUsers } = require('./presence.service');
 const { attachReactions } = require('./reaction.service');
+const { attachPins } = require('./messagePin.service');
 
 // Kept in step with the multer limit in routes/upload.routes.js.
 const MAX_ATTACHMENTS = 10;
@@ -152,7 +154,7 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
           WHERE file_url = $1
             AND uploader_id = $3
             AND attached_message_id IS NULL
-          RETURNING filename, mime_type, size_bytes`,
+          RETURNING filename, mime_type, size_bytes, public_id, resource_type`,
         [url, message.id, senderId],
       );
 
@@ -166,12 +168,26 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
       // filename/mime_type/size come from the upload record, never the request.
       // Otherwise a client could attach someone else's real URL while claiming
       // it is a PDF, and the stored metadata would be whatever it posted.
+      //
+      // public_id and resource_type travel with it for the same reason: the
+      // delivery proxy addresses Cloudinary by those two, and re-deriving them
+      // from file_url later would be parsing a URL to recover facts we already
+      // had. Null for rows uploaded before migration 016 — the proxy falls back
+      // to parsing file_url for those, which is worse but not broken.
       const owned = claim.rows[0];
       const attResult = await client.query(
-        `INSERT INTO attachments (message_id, filename, file_url, file_type, size_bytes)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO attachments (message_id, filename, file_url, file_type, size_bytes, public_id, resource_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, filename, file_url, file_type, size_bytes`,
-        [message.id, owned.filename, url, owned.mime_type, owned.size_bytes ?? null],
+        [
+          message.id,
+          owned.filename,
+          url,
+          owned.mime_type,
+          owned.size_bytes ?? null,
+          owned.public_id ?? null,
+          owned.resource_type ?? null,
+        ],
       );
       savedAttachments.push(attResult.rows[0]);
     }
@@ -220,6 +236,7 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
   //    bell entry is strictly better than reporting a failed send for a message
   //    that exists.
   await notifyMentions({ message, mentionedIds, senderId, io });
+  await notifyRoomActivity({ message, senderId, mentionedIds, io });
 
   // 8. Refresh every member's chat-list row. Last, and after the commit, so the
   //    preview and the unread badge read the same data anyone else would.
@@ -230,7 +247,7 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
   // Reactions are attached for the same reason the other payload fields are: all
   // six surfaces return one message shape, and a message that was just created has
   // none, so this is always [].
-  const [payload] = await attachReactions([{
+  const [payload] = await attachPins(await attachReactions([{
     ...message,
     sender_name: sender.rows[0]?.display_name || null,
     sender_avatar: sender.rows[0]?.avatar_url || null,
@@ -238,7 +255,7 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
     // Exposed so the client can style a real mention rather than regex-matching
     // the text, and so a client can learn which ids a send actually resolved to.
     mentioned_user_ids: mentionedIds,
-  }], senderId);
+  }], senderId), senderId);
 
   return payload;
 }
@@ -330,6 +347,75 @@ async function notifyMentions({ message, mentionedIds, senderId, io }) {
       console.error('Mention notification failed', err);
     }
   }
+  return notified;
+}
+
+/**
+ * Tell the room's other members something happened.
+ *
+ * `new_message` and `file_uploaded` have been in the allowlist since they were
+ * declared and nothing ever wrote them, so the bell only ever showed mentions.
+ * Written here, after the commit, for the same reason mentions are.
+ *
+ * The suppression is the important part. A bell entry for a message somebody is
+ * looking at is noise at best — they watch it arrive — and writing one per
+ * message per member turns a busy room into hundreds of unread rows a person has
+ * to click through to clear. So anyone who currently has this room open is
+ * skipped: `getRoomOnlineUsers` is the same Redis set `room-presence` broadcasts
+ * from, so this is one lookup per message rather than one per member.
+ *
+ * When Redis is unavailable the helper returns an empty set, which means nobody
+ * counts as present and everyone is notified. That is the safe direction to fail:
+ * a spurious notification is a minor annoyance, and silently suppressing one
+ * because presence was unavailable would be an invisible hole.
+ *
+ * Members named in `mentionedIds` are skipped so a person who was @mentioned
+ * gets their 'mention' row and not this as well.
+ */
+async function notifyRoomActivity({ message, senderId, mentionedIds = [], io }) {
+  let members;
+  try {
+    members = await query(
+      `SELECT user_id FROM room_members WHERE room_id = $1 AND user_id <> $2`,
+      [message.room_id, senderId],
+    );
+  } catch (err) {
+    console.error('Could not read room membership for activity notice', err);
+    return [];
+  }
+
+  const present = new Set(await getRoomOnlineUsers(message.room_id));
+  const notified = [];
+
+  // A message carrying a file is one event, not two. Sending both would give the
+  // recipient a "File shared" row and a "New message" row for the same message,
+  // which is two bell entries to open for one thing.
+  const hasFile = Array.isArray(message.attachments) && message.attachments.length > 0;
+  const type = hasFile ? 'file_uploaded' : 'new_message';
+
+  // Somebody named in the message already has a 'mention' row waiting, which is
+  // the more specific and more useful of the two. Sending them this as well
+  // would give one person two bell entries for one message, and the second one
+  // would only ever say "New message".
+  const mentioned = new Set(mentionedIds);
+
+  for (const row of members.rows) {
+    const recipientId = row.user_id;
+    if (present.has(recipientId) || mentioned.has(recipientId)) continue;
+    try {
+      await notifyAndEmit({
+        recipientId,
+        type,
+        referenceId: message.id,
+        actorId: senderId,
+        io,
+      });
+      notified.push(recipientId);
+    } catch (err) {
+      console.error('Activity notification failed', err);
+    }
+  }
+
   return notified;
 }
 

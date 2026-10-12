@@ -28,8 +28,15 @@ const ApiError = require('../utils/ApiError');
 // rejected at write time rather than becoming a row nothing can render.
 const MESSAGE_TARGET_TYPES = ['mention', 'new_message', 'file_uploaded'];
 const ROOM_TARGET_TYPES = ['room_invite', 'member_joined'];
+// Added in phase 8: flagging a message as a task told nobody. The assignee had
+// no way to learn about it short of opening the board.
+const TASK_TARGET_TYPES = ['task'];
 
-const NOTIFICATION_TYPES = [...MESSAGE_TARGET_TYPES, ...ROOM_TARGET_TYPES];
+const NOTIFICATION_TYPES = [
+  ...MESSAGE_TARGET_TYPES,
+  ...ROOM_TARGET_TYPES,
+  ...TASK_TARGET_TYPES,
+];
 
 const TARGET_OF = {
   mention: 'message',
@@ -37,6 +44,7 @@ const TARGET_OF = {
   file_uploaded: 'message',
   room_invite: 'room',
   member_joined: 'room',
+  task: 'task',
 };
 
 // Long enough to render a line in the bell, short enough not to dump a whole
@@ -112,12 +120,14 @@ async function presentNotifications(rows, { db } = {}) {
 
   const messageIds = [];
   const roomIds = [];
+  const taskIds = [];
   const actorIds = new Set();
   for (const row of rows) {
     if (row.actor_id) actorIds.add(row.actor_id);
     if (!row.reference_id) continue;
     if (TARGET_OF[row.type] === 'message') messageIds.push(row.reference_id);
     else if (TARGET_OF[row.type] === 'room') roomIds.push(row.reference_id);
+    else if (TARGET_OF[row.type] === 'task') taskIds.push(row.reference_id);
   }
 
   // A soft-deleted message still resolves — the recipient should still see that
@@ -161,6 +171,21 @@ async function presentNotifications(rows, { db } = {}) {
     for (const a of found) actors.set(a.id, a.display_name);
   }
 
+  // Tasks resolve to their room so the bell can say where the work is, plus the
+  // title so it can say what. Batched like the other two for the same reason: a
+  // page of notifications spans a few types, not one per row.
+  const tasks = new Map();
+  if (taskIds.length > 0) {
+    const { rows: found } = await run(
+      `SELECT t.id, t.title, t.room_id, r.name AS room_name, r.slug AS room_slug
+         FROM tasks t
+         INNER JOIN rooms r ON r.id = t.room_id
+        WHERE t.id = ANY($1::uuid[])`,
+      [taskIds],
+    );
+    for (const t of found) tasks.set(t.id, t);
+  }
+
   return rows.map((row) => {
     let context = {
       room_id: null,
@@ -168,6 +193,7 @@ async function presentNotifications(rows, { db } = {}) {
       room_slug: null,
       actor_name: null,
       message_preview: null,
+      task_title: null,
     };
 
     let senderName = null;
@@ -189,6 +215,21 @@ async function presentNotifications(rows, { db } = {}) {
       const r = rooms.get(row.reference_id);
       if (r) {
         context = { ...context, room_id: r.id, room_name: r.name, room_slug: r.slug };
+      }
+    } else if (row.reference_id && TARGET_OF[row.type] === 'task') {
+      const t = tasks.get(row.reference_id);
+      if (t) {
+        // task_title rather than message_preview. The preview field is
+        // documented as "what they said" and the bell renders it as the quoted
+        // line under "actor in room"; a task title is not a sentence anyone said
+        // and borrowing the field would make the two indistinguishable.
+        context = {
+          ...context,
+          room_id: t.room_id,
+          room_name: t.room_name,
+          room_slug: t.room_slug,
+          task_title: t.title,
+        };
       }
     }
 

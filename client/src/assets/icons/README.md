@@ -1,6 +1,6 @@
 # Conclave icons
 
-90 icons, 24x24, stroke 1.75, round caps and joins.
+97 icons, 24x24, stroke 1.75, round caps and joins.
 
 Stroke and fill use `currentColor`, so icons inherit text color.
 
@@ -96,6 +96,11 @@ Stroke and fill use `currentColor`, so icons inherit text color.
 - calendar.svg
 - recent.svg
 - online.svg
+
+- sun.svg
+- moon.svg
+- system.svg
+- arrow-down.svg
 
 ## Sprite
 
