@@ -8,6 +8,8 @@ import IconSent from '@/assets/icons/sent.svg?react';
 import AttachmentCard from './AttachmentCard';
 import MessageActions from './MessageActions';
 import MessageReactions from './MessageReactions';
+import { useState } from "react";
+import useLongPress from "@/hooks/useLongPress";
 
 const TICKS = {
   pending: { Icon: IconPending, label: 'Sending' },
@@ -86,6 +88,8 @@ export default function Message({
 }) {
   const { isOnlineIn } = usePresence();
   const mine = message.sender_id === viewerId;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const longPress = useLongPress(() => setMenuOpen(true), { disabled: message.is_deleted });
 
   const status = mine
     ? readStatus(message, members, viewerId, deliveryIds?.pendingIds, deliveryIds?.failedIds)
@@ -94,26 +98,29 @@ export default function Message({
   const senderName = message.sender_name || 'Unknown member';
   const showAvatar = !mine && !message._consecutive;
 
-  const bubbleClass = [
-    'max-w-[min(36rem,85%)] px-3 py-2 text-body [overflow-wrap:anywhere]',
-    'rounded-2xl',
-    mine ? 'bg-brand text-surface' : 'bg-canvas text-ink',
-    // The tail: the corner nearest the avatar tightens on the last message of
-    // a run, so a group reads as one shape rather than a stack of pills.
-    message._endsGroup ? (mine ? 'rounded-br-md' : 'rounded-bl-md') : '',
-    message.is_deleted ? 'italic' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
+const bubbleClass = [
+  "px-3 py-2 text-body [overflow-wrap:anywhere]",
+  "rounded-2xl",
+  mine ? "bg-brand text-surface" : "bg-canvas text-ink",
+  message._endsGroup ? (mine ? "rounded-br-md" : "rounded-bl-md") : "",
+  message.is_deleted ? "italic" : "",
+  "[-webkit-touch-callout:none] [@media(hover:none)]:select-none",
+]
+  .filter(Boolean)
+  .join(" ");
 
   return (
-    <article className={`group flex items-start gap-2.5 ${mine ? 'flex-row-reverse' : ''}`}>
+    <article
+      className={`group relative flex items-start gap-2.5 ${mine ? "flex-row-reverse" : ""}`}
+    >
       {showAvatar ? (
         <Avatar
           name={senderName}
           src={message.sender_avatar}
           size="md"
-          presence={isOnlineIn(roomId, message.sender_id) ? 'online' : 'offline'}
+          presence={
+            isOnlineIn(roomId, message.sender_id) ? "online" : "offline"
+          }
         />
       ) : (
         // Keeps a run of messages aligned under the first one's text rather
@@ -121,22 +128,20 @@ export default function Message({
         !mine && <span className="h-10 w-10 shrink-0" aria-hidden="true" />
       )}
 
-      <div className={`flex min-w-0 flex-col gap-1 ${mine ? 'items-end' : 'items-start'}`}>
-        {!message._consecutive && (
-          <div className={`flex items-baseline gap-2 ${mine ? 'flex-row-reverse' : ''}`}>
-            <span className="truncate text-label text-ink">
-              {mine ? 'You' : senderName}
-            </span>
-            <time className="text-metadata text-muted" dateTime={message.created_at}>
-              {formatClockTime(message.created_at)}
-            </time>
-          </div>
+      <div
+        className={`flex min-w-0 max-w-[min(36rem,85%)] flex-col gap-1 ${
+          mine ? "items-end" : "items-start"
+        }`}
+      >
+        {!message._consecutive && !mine && (
+          <span className="truncate text-label text-ink">{senderName}</span>
         )}
 
         {replyTarget && !message.is_deleted && (
           <div className="max-w-xs truncate rounded-md border-l-2 border-brand bg-canvas px-2 py-1 text-metadata text-muted">
-            Replying to {replyTarget.sender_name || 'a message'}:{' '}
-            {replyTarget.content || (replyTarget.is_deleted ? 'deleted message' : 'attachment')}
+            Replying to {replyTarget.sender_name || "a message"}:{" "}
+            {replyTarget.content ||
+              (replyTarget.is_deleted ? "deleted message" : "attachment")}
           </div>
         )}
         {message.reply_to_id && !replyTarget && !message.is_deleted && (
@@ -148,13 +153,20 @@ export default function Message({
         {message.is_deleted ? (
           <div className={`${bubbleClass} text-muted`}>Message deleted</div>
         ) : (
-          message.content && <div className={bubbleClass}>{renderContent(message.content)}</div>
+          message.content && (
+            <div className={bubbleClass} {...longPress}>
+              {renderContent(message.content)}
+            </div>
+          )
         )}
 
         {message.attachments?.length > 0 && !message.is_deleted && (
-          <div className="flex max-w-[min(36rem,85%)] flex-col gap-1.5">
+          <div className="flex w-full flex-col gap-1.5">
             {message.attachments.map((attachment) => (
-              <AttachmentCard key={attachment.id || attachment.url} attachment={attachment} />
+              <AttachmentCard
+                key={attachment.id || attachment.url}
+                attachment={attachment}
+              />
             ))}
           </div>
         )}
@@ -175,19 +187,30 @@ export default function Message({
 
         {message._endsGroup && (
           <div className="flex items-center gap-1.5">
-            {status === 'failed' && (
+            {status === "failed" && (
               <span className="text-metadata text-error">Failed to send</span>
             )}
+            <time
+              className="text-metadata text-muted"
+              dateTime={message.created_at}
+            >
+              {formatClockTime(message.created_at)}
+            </time>
             <Tick status={status} />
           </div>
         )}
       </div>
 
-      <div className="opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+      <div
+        className={`shrink-0 transition-opacity ${menuOpen ? "opacity-100" : "opacity-0"} pointer-events-none [@media(hover:none)]:absolute [@media(hover:none)]:right-0 [@media(hover:none)]:top-0 [@media(hover:hover)]:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-within:opacity-100`}
+      >
         <MessageActions
           message={message}
           viewerId={viewerId}
           isAdmin={isAdmin}
+          open={menuOpen}
+          onOpenChange={setMenuOpen}
+          onToggleReaction={(emoji) => onToggleReaction(message, emoji)}
           onReply={() => onReply(message)}
           onEdit={() => onEdit(message)}
           onDelete={() => onDelete(message)}

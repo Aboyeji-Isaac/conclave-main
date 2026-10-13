@@ -11,6 +11,7 @@ import IconReply from '@/assets/icons/reply.svg?react';
 import IconStar from '@/assets/icons/star.svg?react';
 import IconTasks from '@/assets/icons/tasks.svg?react';
 import PopoverMenu from '@/components/ui/PopoverMenu';
+import { REACTION_EMOJI } from "@/lib/messageMeta";
 
 /**
  * Per-message actions.
@@ -53,6 +54,9 @@ export default function MessageActions({
   message,
   viewerId,
   isAdmin,
+  open,
+  onOpenChange,
+  onToggleReaction,
   onReply,
   onEdit,
   onDelete,
@@ -61,8 +65,9 @@ export default function MessageActions({
   onPin,
   onUnpin,
 }) {
-  const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
+  const setOpen = (value) =>
+    onOpenChange(typeof value === "function" ? value(open) : value);
 
   const isMine = message.sender_id === viewerId;
 
@@ -73,43 +78,62 @@ export default function MessageActions({
   // the four pin actions apply.
   const roomPin = message.pins?.room || null;
   const myPins = message.pins?.mine || [];
-  const holdsRoomPin = myPins.includes('room') || roomPin?.user_id === viewerId;
+  const holdsRoomPin = myPins.includes("room") || roomPin?.user_id === viewerId;
   // A room admin can take back somebody else's room pin, matching the server.
   const mayUnpinRoom = holdsRoomPin || isAdmin;
 
   const items = [
-    { key: 'reply', label: 'Reply', Icon: IconReply, onClick: onReply },
+    { key: "reply", label: "Reply", Icon: IconReply, onClick: onReply },
     ...(isMine
-      ? [{ key: 'edit', label: 'Edit', Icon: IconCompose, onClick: onEdit }]
+      ? [{ key: "edit", label: "Edit", Icon: IconCompose, onClick: onEdit }]
       : []),
-    { key: 'promote', label: 'Promote to decision', Icon: IconDecisions, onClick: onPromote },
-    { key: 'task', label: 'Flag as task', Icon: IconTasks, onClick: onFlagTask },
+    {
+      key: "promote",
+      label: "Promote to decision",
+      Icon: IconDecisions,
+      onClick: onPromote,
+    },
+    {
+      key: "task",
+      label: "Flag as task",
+      Icon: IconTasks,
+      onClick: onFlagTask,
+    },
     !roomPin && {
-      key: 'pin-room',
-      label: 'Pin for everyone',
+      key: "pin-room",
+      label: "Pin for everyone",
       Icon: IconPin,
-      onClick: () => onPin(message, 'room'),
+      onClick: () => onPin(message, "room"),
     },
-    roomPin && mayUnpinRoom && {
-      key: 'unpin-room',
-      label: 'Unpin for everyone',
-      Icon: IconPin,
-      onClick: () => onUnpin(message, 'room'),
-    },
-    !myPins.includes('user') && {
-      key: 'bookmark',
-      label: 'Bookmark for me',
+    roomPin &&
+      mayUnpinRoom && {
+        key: "unpin-room",
+        label: "Unpin for everyone",
+        Icon: IconPin,
+        onClick: () => onUnpin(message, "room"),
+      },
+    !myPins.includes("user") && {
+      key: "bookmark",
+      label: "Bookmark for me",
       Icon: IconStar,
-      onClick: () => onPin(message, 'user'),
+      onClick: () => onPin(message, "user"),
     },
-    myPins.includes('user') && {
-      key: 'unbookmark',
-      label: 'Remove my bookmark',
+    myPins.includes("user") && {
+      key: "unbookmark",
+      label: "Remove my bookmark",
       Icon: IconStar,
-      onClick: () => onUnpin(message, 'user'),
+      onClick: () => onUnpin(message, "user"),
     },
     ...(isMine || isAdmin
-      ? [{ key: 'delete', label: 'Delete', Icon: IconDelete, onClick: onDelete, danger: true }]
+      ? [
+          {
+            key: "delete",
+            label: "Delete",
+            Icon: IconDelete,
+            onClick: onDelete,
+            danger: true,
+          },
+        ]
       : []),
     // Spreading here rather than `.filter(Boolean)` inline: a false branch above
     // is a skipped item, and skipping is cheaper to read than a filter.
@@ -137,6 +161,38 @@ export default function MessageActions({
         label="Message actions"
         className="w-52"
       >
+        <div
+          role="group"
+          aria-label="React to this message"
+          className="mb-1 flex justify-between gap-1 border-b border-line px-1 pb-1.5 pt-0.5"
+        >
+          {REACTION_EMOJI.map((emoji) => {
+            const already = message.reactions?.find(
+              (r) => r.emoji === emoji,
+            )?.reacted;
+            return (
+              <button
+                key={emoji}
+                type="button"
+                role="menuitem"
+                aria-pressed={already}
+                onClick={() => {
+                  setOpen(false);
+                  onToggleReaction(emoji);
+                }}
+                className={`grid h-9 w-9 place-items-center rounded-lg text-body transition-colors hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 ${
+                  already ? "bg-brand-soft" : ""
+                }`}
+              >
+                <span aria-hidden="true">{emoji}</span>
+                <span className="sr-only">
+                  {already ? `Remove ${emoji} reaction` : `React with ${emoji}`}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        
         {items.map(({ key, label, Icon, onClick, danger }) => (
           <button
             key={key}
@@ -147,10 +203,13 @@ export default function MessageActions({
               onClick();
             }}
             className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-body transition-colors hover:bg-canvas ${
-              danger ? 'text-error' : 'text-ink'
+              danger ? "text-error" : "text-ink"
             }`}
           >
-            <Icon className={`h-4 w-4 ${danger ? 'text-error' : 'text-muted'}`} aria-hidden="true" />
+            <Icon
+              className={`h-4 w-4 ${danger ? "text-error" : "text-muted"}`}
+              aria-hidden="true"
+            />
             {label}
           </button>
         ))}
