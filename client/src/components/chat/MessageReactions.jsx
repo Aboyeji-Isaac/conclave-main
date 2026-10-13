@@ -25,7 +25,12 @@ export default function MessageReactions({ message, onToggle }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const triggerRef = useRef(null);
 
+  // The first reaction on a message now comes from the actions menu, so this
+  // row only exists once there is something to show or add to.
+  if (!reactions.length) return null;
+
   return (
+    // ...the rest stays exactly as it is
     <div className="relative flex flex-wrap items-center gap-1.5">
       {reactions.map((reaction) => (
         <button
@@ -36,8 +41,8 @@ export default function MessageReactions({ message, onToggle }) {
           onClick={() => onToggle(reaction.emoji)}
           className={`inline-flex min-h-6 items-center gap-1 rounded-full border px-1.5 text-metadata transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 ${
             reaction.reacted
-              ? 'border-brand bg-brand-soft text-brand'
-              : 'border-line bg-canvas text-muted hover:text-ink'
+              ? "border-brand bg-brand-soft text-brand"
+              : "border-line bg-canvas text-muted hover:text-ink"
           }`}
         >
           <span aria-hidden="true">{reaction.emoji}</span>
@@ -66,29 +71,29 @@ export default function MessageReactions({ message, onToggle }) {
         label="Choose a reaction"
         className="flex gap-1"
       >
-          {REACTION_EMOJI.map((emoji) => {
-            const already = reactions.find((r) => r.emoji === emoji)?.reacted;
-            return (
-              <button
-                key={emoji}
-                type="button"
-                role="menuitem"
-                aria-pressed={already}
-                onClick={() => {
-                  onToggle(emoji);
-                  setPickerOpen(false);
-                }}
-                className={`grid h-9 w-9 place-items-center rounded-lg text-body transition-colors hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 ${
-                  already ? 'bg-brand-soft' : ''
-                }`}
-              >
-                <span aria-hidden="true">{emoji}</span>
-                <span className="sr-only">
-                  {already ? `Remove ${emoji} reaction` : `React with ${emoji}`}
-                </span>
-              </button>
-            );
-          })}
+        {REACTION_EMOJI.map((emoji) => {
+          const already = reactions.find((r) => r.emoji === emoji)?.reacted;
+          return (
+            <button
+              key={emoji}
+              type="button"
+              role="menuitem"
+              aria-pressed={already}
+              onClick={() => {
+                onToggle(emoji);
+                setPickerOpen(false);
+              }}
+              className={`grid h-9 w-9 place-items-center rounded-lg text-body transition-colors hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 ${
+                already ? "bg-brand-soft" : ""
+              }`}
+            >
+              <span aria-hidden="true">{emoji}</span>
+              <span className="sr-only">
+                {already ? `Remove ${emoji} reaction` : `React with ${emoji}`}
+              </span>
+            </button>
+          );
+        })}
       </PopoverMenu>
     </div>
   );
