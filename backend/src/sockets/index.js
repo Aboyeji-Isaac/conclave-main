@@ -56,7 +56,22 @@ const socketHandler = require('../utils/socketHandler');
 //                                   reactions' `reacted` is, so each client fixes
 //                                   up its own from the acting userId.
 //   task:updated       { task }     emitted by POST /tasks and
-//                                   PATCH /tasks/:taskId/status
+//                                   PATCH /tasks/:taskId/status. Sent to each
+//                                   of the assignee, the creator and the room's
+//                                   admins individually in `user:{userId}`,
+//                                   never to the room — the list query hides a
+//                                   task from everyone else, so announcing it
+//                                   would leak it.
+//   poll:updated       { messageId, roomId, poll }
+//                                   from PUT /polls/:pollId/vote and POST
+//                                   /polls/:pollId/close. Carries ONLY the
+//                                   poll, never the whole message: a message
+//                                   payload holds per-viewer fields
+//                                   (reactions' `reacted`, `pins.mine`), and
+//                                   replacing one wholesale would overwrite
+//                                   those on everyone else's screen. The poll
+//                                   itself is viewer-independent — who voted is
+//                                   shared truth.
 //   message:updated    { message }  the whole edited row, from
 //                                   PATCH /messages/:messageId
 //   message:deleted    { message }  the whole tombstone row, from
@@ -84,11 +99,12 @@ const socketHandler = require('../utils/socketHandler');
 // room invites and mentions. Marking notifications seen emits the separate
 // `notification:seen`, never `notification` with a count in place of a row.
 //
-// Limitation worth knowing: task:updated is emitted to the task's room, and
-// sockets only join a room on demand (client/src/hooks/useMessages.js emits
-// join-room when a room view mounts). A user sitting on the top-level cross-room
-// Tasks page has not joined the rooms it lists, so that page will not update
-// live — only on reload.
+// Limitation worth knowing, now half-fixed: task:updated is no longer emitted to
+// the task's room (see its entry above), so it reaches the assignee, the creator
+// and the admins on `user:{userId}` — which every socket joins on connect, and so
+// the cross-room Tasks page updates live even though it never joins a room.
+// Nothing else here has changed: sockets still join a chat room only on demand
+// (client/src/hooks/useMessages.js emits join-room when a room view mounts).
 
 // Membership check for events that only relay state. createMessage already
 // authorises send-message; these three did not, so a client could spoof read

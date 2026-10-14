@@ -4,6 +4,7 @@ const cloudinary = require('../config/cloudinary');
 const { query } = require('../config/db');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
+const { fail } = require('../utils/apiResponse');
 const env = require('../config/env');
 
 const DELIVERY_HOST = 'res.cloudinary.com';
@@ -172,7 +173,17 @@ const getAttachment = asyncHandler(async (req, res) => {
    * browser never interprets the bytes as a document, and nosniff stops it
    * re-interpreting a .png that is really HTML.
    */
-  res.setHeader('Content-Disposition', `attachment; filename="${sanitiseFilename(row.filename)}"`);
+  const safe = sanitiseFilename(row.filename);
+  // sanitiseFilename is deliberately ASCII, so Résumé.pdf would download as
+  // R_sum_.pdf. RFC 5987 lets a second, percent-encoded name carry the real one
+  // for browsers that understand it, while the ASCII one stays as the fallback
+  // for the rest. '()* are escaped because RFC 2616 excludes them from the
+  // token, and escape() leaves them alone.
+  const encoded = encodeURIComponent(String(row.filename || safe)).replace(/['()*]/g, escape);
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${safe}"; filename*=UTF-8''${encoded}`,
+  );
   res.setHeader('Content-Type', row.file_type || 'application/octet-stream');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, no-store');
@@ -182,8 +193,13 @@ const getAttachment = asyncHandler(async (req, res) => {
 
   upstream.on('error', (err) => {
     console.error('Cloudinary stream error', { attachmentId, message: err.message });
-    if (!res.headersSent) throw new ApiError(502, 'Attachment storage is temporarily unavailable');
+    // Not `throw`: this is a plain event listener, so asyncHandler never sees
+    // the exception and it becomes an uncaught error that takes the process
+    // with it. Answer the client instead, and fall back to destroying the
+    // socket if the headers are already gone.
+    if (!res.headersSent) return fail(res, 'Attachment storage is temporarily unavailable', 502);
     res.destroy();
+    return undefined;
   });
 });
 

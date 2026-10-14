@@ -1,97 +1,115 @@
-import { NavLink, useNavigate, useSearchParams } from 'react-router-dom';
-import { useNotifications } from '@/contexts/NotificationsContext';
-import IconMenu from '../assets/icons/menu.svg?react';
-import IconNotify from '../assets/icons/notify.svg?react';
-import IconSearch from '../assets/icons/search.svg?react';
+import { NavLink, useLocation, useMatch } from "react-router-dom";
+import { useNotifications } from "@/contexts/NotificationsContext";
+import Logo from "@/components/landing/Logo";
+import IconMenu from "../assets/icons/menu.svg?react";
+import IconNotify from "../assets/icons/notify.svg?react";
+
+const TITLES = [
+  ["/chats", "Chats"],
+  ["/tasks", "Tasks"],
+  ["/decisions", "Decisions"],
+  ["/digest", "Catch up"],
+  ["/notifications", "Notifications"],
+  ["/settings", "Settings"],
+  ["/profile", "Profile"],
+  ["/new", "New chat"],
+];
+
+function titleFor(pathname) {
+  const match = TITLES.find(
+    ([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+  return match ? match[1] : "Conclave";
+}
+
+const iconButton =
+  "relative grid h-10 w-10 shrink-0 place-items-center rounded-lg text-ink transition-colors hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30";
 
 /**
  * The header.
  *
- * The search field writes `?q=` and always lands on `/chats`, because the
- * parameter is only meaningful to the chat list. Typing it while a room is
- * open therefore leaves the room — which is right: the alternative is writing
- * `?q=` onto a route that ignores it, so the field looks live and does
- * nothing. Navigation uses `replace` so a ten-character query does not become
- * ten history entries.
+ * Left: the sidebar button and the bell, then the page title. On chat routes the
+ * header splits into the same two columns as the chat shell, so the room's own
+ * header sits above the conversation instead of above the list. Below md, an
+ * open room replaces the whole row with the room header (back arrow, name),
+ * which is how phone messengers behave.
  *
- * The bell is a link rather than a button with no handler. It had no
- * destination before, which made it a control that does nothing — the worst
- * possible outcome for something that looks like the way to reach
- * notifications. The sidebar now carries that route too, and this is the
- * second entry point.
- *
- * The badge is the notifications unread count, not the room unread total. An
- * earlier version used the room total because `GET /notifications` was thought
- * to have no aggregate; it does — the controller counts unseen rows separately
- * from the page so the badge is not capped at the page size. The two numbers
- * count different things and only one of them belongs on a bell.
+ * Search lives in the chat list now, next to the thing it filters.
  *
  * @param {React.ReactNode|null} roomHeader - a richer title supplied by the route
  * @param {() => void} onMenuClick
+ * @param {string} menuLabel
  */
-export default function Navbar({ roomHeader = null, onMenuClick }) {
-  const navigate = useNavigate();
-  const [params] = useSearchParams();
+export default function Navbar({
+  roomHeader = null,
+  onMenuClick,
+  menuLabel = "Open menu",
+}) {
+  const { pathname } = useLocation();
+  const roomOpen = Boolean(useMatch("/chats/:roomId/*"));
+  const inChats = pathname.startsWith("/chats");
   const { unreadCount } = useNotifications();
 
-  const query = params.get('q') || '';
-
-  const setQuery = (value) => {
-    const next = new URLSearchParams();
-    if (value) next.set('q', value);
-    navigate(`/chats?${next.toString()}`, { replace: true });
-  };
+  // Below md an open room shows its own header, unless the page has not
+  // supplied one (the room info page), in which case the controls stay.
+  const roomOwnsRow = roomOpen && Boolean(roomHeader);
 
   return (
     <header className="border-b border-line bg-surface">
-      <nav className="flex h-16 items-center gap-4 pl-4 pr-7">
-        <button
-          type="button"
-          onClick={onMenuClick}
-          aria-label="Open menu"
-          className="flex h-6 w-6 shrink-0 items-center justify-center md:hidden"
+      <nav
+        className={`grid h-16 grid-cols-1 items-center ${
+          inChats ? "md:grid-cols-[var(--list-w)_1fr]" : ""
+        }`}
+      >
+        <div
+          className={`flex min-w-0 items-center justify-between px-3 ${roomOwnsRow ? "hidden md:flex" : ""}`}
         >
-          <IconMenu className="h-6 w-6 text-ink" />
-        </button>
-
-        {/* A div, not a p: `roomHeader` is a <RoomHeader>, which renders the
-            page's <h1>. Inside a <p> that is invalid nesting and React logs
-            validateDOMNesting on every room view. */}
-        <div className="min-w-0 flex-1 truncate text-h2 text-ink">
-          {roomHeader || 'Workspace overview'}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-4">
-          <label className="relative hidden md:block">
-            <span className="sr-only">Search chats</span>
-            <IconSearch
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
-              aria-hidden="true"
-            />
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search chats"
-              className="min-h-10 w-48 rounded-lg border border-line bg-canvas pl-9 pr-3 text-body text-ink outline-none transition-shadow placeholder:text-muted/70 focus:border-brand focus:ring-2 focus:ring-brand/15 lg:w-64"
-            />
-          </label>
-
-          <NavLink
-            to="/notifications"
-            aria-label={
-              unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'
-            }
-            className="relative flex h-6 w-6 items-center justify-center"
-          >
-            <IconNotify className="h-6 w-6 text-ink" />
-            {unreadCount > 0 && (
-              <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-metadata font-semibold text-surface">
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </span>
-            )}
+          <NavLink to="/chats" aria-label="Conclave, home" className="md:hidden">
+            <Logo withWordmark />
           </NavLink>
+
+          <div className="ml-auto flex items-center gap-1 md:ml-0">
+            <button
+              type="button"
+              onClick={onMenuClick}
+              aria-label={menuLabel}
+              className={iconButton}
+            >
+              <IconMenu className="h-6 w-6" aria-hidden="true" />
+            </button>
+
+            <NavLink
+              to="/notifications"
+              aria-label={
+                unreadCount > 0
+                  ? `Notifications, ${unreadCount} unread`
+                  : "Notifications"
+              }
+              className={iconButton}
+            >
+              <IconNotify className="h-6 w-6" aria-hidden="true" />
+              {unreadCount > 0 && (
+                <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-metadata font-semibold text-surface">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
+            </NavLink>
+
+            <div className="ml-2 hidden min-w-0 flex-1 truncate text-h2 text-ink md:block">
+              {titleFor(pathname)}
+            </div>
+          </div>
         </div>
+
+        {inChats && (
+          <div
+            className={`min-w-0 md:border-l md:border-line md:px-4 ${
+              roomOwnsRow ? "px-3" : "hidden md:block"
+            }`}
+          >
+            {roomHeader}
+          </div>
+        )}
       </nav>
     </header>
   );

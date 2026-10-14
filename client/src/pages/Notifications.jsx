@@ -4,6 +4,7 @@ import Button from '@/components/ui/Button';
 import EmptyState from '@/components/ui/EmptyState';
 import Spinner from '@/components/ui/Spinner';
 import { useNotifications } from '@/contexts/NotificationsContext';
+import Page from '@/components/layout/Page';
 
 // Type-to-display mapping lives here, not in the fixtures and not in the
 // service: the server sends a bare type, and display copy is presentation.
@@ -139,7 +140,7 @@ export default function Notifications() {
   };
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-6 md:px-7">
+      <Page width="content">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-1" role="group" aria-label="Filter notifications">
           {FILTERS.map(({ key, label }) => (
@@ -200,6 +201,6 @@ export default function Notifications() {
           </div>
         )}
       </div>
-    </div>
+      </Page>
   );
 }

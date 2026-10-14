@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { isDevAuthBypass, previewUser } from "../config/devPreview";
 import * as authService from "../services/auth.service";
+import { clearLocalFiles } from "../services/attachments.service";
 import { deleteAccount as deleteAccountRequest, updateProfile as updateProfileRequest } from "../services/users.service";
 const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
@@ -56,6 +57,10 @@ export function AuthProvider({ children }) {
       return;
     }
     await authService.logout();
+    // After the server call, not before: if signing out fails the files are
+    // still the signed-in user's, and clearing them first would destroy the
+    // cache of a session that just refused to end.
+    await clearLocalFiles();
     setUser(null);
   }
   // Editing the profile has to land here, not only on the Profile page. The rail

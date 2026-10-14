@@ -28,7 +28,7 @@ export default function Chats() {
   const shellContext = useOutletContext();
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[minmax(280px,320px)_1fr] lg:grid-cols-[minmax(320px,380px)_1fr]">
+    <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[var(--list-w)_1fr]">
       <section
         className={`min-h-0 border-r border-line bg-surface ${roomId ? 'hidden md:block' : ''}`}
       >

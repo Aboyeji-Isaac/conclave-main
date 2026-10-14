@@ -4,6 +4,7 @@ import Spinner from '@/components/ui/Spinner';
 import ThemeSwitch from '@/components/ui/ThemeSwitch';
 import { useToast } from '@/contexts/ToastContext';
 import { getPreferences, updatePreferences } from '@/services/users.service';
+import Page from '@/components/layout/Page';
 
 // The same three states the server constrains (migration 015). Mirrored here so
 // the control can be rendered from the list rather than hardcoded three times,
@@ -92,7 +93,7 @@ export default function Settings() {
   const silenced = level === 'none';
 
   return (
-    <div className="mx-auto h-full min-h-0 max-w-3xl overflow-y-auto px-4 py-8 md:px-7">
+      <Page width="form">
       <h1 className="text-h1 text-ink">Settings</h1>
       <p className="mt-2 text-body leading-relaxed text-muted">
         How Conclave looks, and when it interrupts you.
@@ -189,6 +190,6 @@ export default function Settings() {
           </ul>
         </fieldset>
       </section>
-    </div>
+      </Page>
   );
 }

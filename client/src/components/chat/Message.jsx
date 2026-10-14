@@ -8,6 +8,7 @@ import IconSent from '@/assets/icons/sent.svg?react';
 import AttachmentCard from './AttachmentCard';
 import MessageActions from './MessageActions';
 import MessageReactions from './MessageReactions';
+import PollCard from './PollCard';
 import { useState } from "react";
 import useLongPress from "@/hooks/useLongPress";
 
@@ -154,8 +155,20 @@ const bubbleClass = [
           <div className={`${bubbleClass} text-muted`}>Message deleted</div>
         ) : (
           message.content && (
-            <div className={bubbleClass} {...longPress}>
-              {renderContent(message.content)}
+            // The poll carries its question as the message content, so the
+            // bubble exists either way — it just renders the poll instead of
+            // the text. Chat-list previews and search still read the question
+            // as ordinary content.
+            <div {...longPress}>
+              {message.poll ? (
+                <PollCard
+                  message={message}
+                  viewerId={viewerId}
+                  canClose={mine || isAdmin}
+                />
+              ) : (
+                <div className={bubbleClass}>{renderContent(message.content)}</div>
+              )}
             </div>
           )
         )}

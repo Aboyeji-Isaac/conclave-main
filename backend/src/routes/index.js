@@ -10,6 +10,7 @@ const digestRoutes = require('./digest.routes');
 const notificationsRoutes = require('./notifications.routes');
 const uploadRoutes = require('./upload.routes');
 const attachmentsRoutes = require('./attachments.routes');
+const pollsRoutes = require('./polls.routes');
 
 const router = Router();
 
@@ -23,5 +24,6 @@ router.use('/digest', digestRoutes);
 router.use('/notifications', notificationsRoutes);
 router.use('/upload', uploadRoutes);
 router.use('/attachments', attachmentsRoutes);
+router.use('/polls', pollsRoutes);
 
 module.exports = router;

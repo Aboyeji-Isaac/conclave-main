@@ -53,7 +53,7 @@ export default function ChatList() {
 
       <CatchUpCard />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-4">
         {isLoading && <Spinner label="Loading chats" />}
 
         {error && (

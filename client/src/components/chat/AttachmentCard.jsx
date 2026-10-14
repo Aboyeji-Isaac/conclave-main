@@ -4,6 +4,12 @@ import IconDownload from '@/assets/icons/download.svg?react';
 import IconFile from '@/assets/icons/file.svg?react';
 import IconImage from '@/assets/icons/image.svg?react';
 import IconSpreadsheet from '@/assets/icons/spreadsheet.svg?react';
+import { useState } from 'react';
+import Button from '@/components/ui/Button';
+import Modal from '@/components/ui/Modal';
+import { useToast } from '@/contexts/ToastContext';
+import useAttachmentImage from '@/hooks/useAttachmentImage';
+import { downloadAttachment } from '@/services/attachments.service';
 
 /**
  * A human-readable byte count.
@@ -36,50 +42,102 @@ function iconFor(mimeType = '') {
   return IconFile;
 }
 
-/**
- * One attachment on a message.
- *
- * The href points at this app's own `/attachments/:id` rather than at the
- * stored Cloudinary URL, for two reasons that both turned out to matter:
- *
- * 1. Access. A direct Cloudinary link meant anyone who ever saw the URL could
- *    download the file with no check that they were in the room. The proxy
- *    resolves the attachment to its room and refuses anyone who is not a member.
- *
- * 2. Delivery. The Cloudinary delivery domain returns 401 "deny or ACL failure"
- *    on this account for everything that is not a plain image — images served
- *    fine, a PDF and a ZIP both failed — so every document attachment was a dead
- *    link. The proxy fetches through Cloudinary's authenticated API instead,
- *    which is not subject to those delivery rules.
- *
- * `download` is not set: the proxy already sends Content-Disposition:
- * attachment, and setting it twice would let a filename chosen by the sender
- * override the sanitised one the server emits.
- *
- * @param {{ id?: string, filename: string, size?: number, mime_type?: string, url: string }} attachment
- */
-export default function AttachmentCard({ attachment }) {
+function FileAttachment({ attachment }) {
   const Icon = iconFor(attachment.mime_type);
   const size = formatSize(attachment.size);
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  // An optimistic row has no id yet, so there is nothing to fetch.
+  const ready = Boolean(attachment.id);
 
-  // Fall back to the stored URL only when there is no id at all, which happens
-  // for a message payload from before the proxy existed.
-  const href = attachment.id ? `/attachments/${attachment.id}` : attachment.url;
+  const handleClick = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    try {
+      await downloadAttachment(attachment);
+    } catch (err) {
+      toast({ title: 'Download failed', description: err.message, tone: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="group flex w-full max-w-sm items-center gap-3 rounded-lg border border-line bg-canvas px-3 py-2.5 transition-colors hover:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={!ready || busy}
+      className="group flex w-full max-w-sm items-center gap-3 rounded-lg border border-line bg-canvas px-3 py-2.5 text-left transition-colors hover:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 disabled:opacity-70"
     >
       <Icon className="h-5 w-5 shrink-0 text-muted" aria-hidden="true" />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-body text-ink">{attachment.filename}</span>
-        {size && <span className="block text-metadata text-muted">{size}</span>}
+        <span className="block truncate text-body text-ink">
+          {attachment.filename || 'Attachment'}
+        </span>
+        <span className="block text-metadata text-muted">{ready ? size : 'Sending…'}</span>
       </span>
-      <IconDownload className="h-4 w-4 shrink-0 text-muted transition-colors group-hover:text-brand" aria-hidden="true" />
+      <IconDownload
+        className={`h-4 w-4 shrink-0 text-muted transition-colors group-hover:text-brand ${
+          busy ? 'animate-pulse' : ''
+        }`}
+        aria-hidden="true"
+      />
       <span className="sr-only">Download {attachment.filename}</span>
-    </a>
+    </button>
   );
+}
+
+function ImageAttachment({ attachment }) {
+  const { src, failed } = useAttachmentImage(attachment);
+  const [open, setOpen] = useState(false);
+  const { toast } = useToast();
+
+  const save = () =>
+    downloadAttachment(attachment).catch((err) =>
+      toast({ title: 'Download failed', description: err.message, tone: 'error' }),
+    );
+
+  if (failed) return <FileAttachment attachment={attachment} />;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={!src}
+        aria-label={`Open ${attachment.filename}`}
+        className="relative block w-full max-w-xs overflow-hidden rounded-xl bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
+      >
+        {src ? (
+          <img src={src} alt={attachment.filename} className="max-h-72 w-full object-cover" />
+        ) : (
+          <span className="block aspect-[4/3] w-full animate-pulse bg-line" aria-hidden="true" />
+        )}
+      </button>
+
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title={attachment.filename}
+        footer={
+          <Button variant="secondary" onClick={save}>
+            Download
+          </Button>
+        }
+      >
+        {src && (
+          <img
+            src={src}
+            alt={attachment.filename}
+            className="mx-auto max-h-[65vh] w-auto max-w-full object-contain"
+          />
+        )}
+      </Modal>
+    </>
+  );
+}
+
+export default function AttachmentCard({ attachment }) {
+  const isImage = attachment.id && (attachment.mime_type || '').startsWith('image/');
+  return isImage ? <ImageAttachment attachment={attachment} /> : <FileAttachment attachment={attachment} />;
 }

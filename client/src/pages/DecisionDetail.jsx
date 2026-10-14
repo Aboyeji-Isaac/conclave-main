@@ -8,6 +8,7 @@ import IconStar from '@/assets/icons/star.svg?react';
 import Spinner from '@/components/ui/Spinner';
 import { useToast } from '@/contexts/ToastContext';
 import { getDecision, pinDecision, unpinDecision } from '@/services/decisions.service';
+import Page from '@/components/layout/Page';
 
 function formatDate(value) {
   const date = new Date(value);
@@ -120,7 +121,7 @@ export default function DecisionDetail() {
 
   if (error || !decision) {
     return (
-      <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-6 md:px-7">
+      <Page width="content">
         <p role="alert" className="rounded-lg bg-error/10 p-4 text-body text-error">
           {error || 'Decision not found.'}
         </p>
@@ -131,12 +132,12 @@ export default function DecisionDetail() {
           <IconArrowLeft className="h-4 w-4" aria-hidden="true" />
           Back to decisions
         </Link>
-      </div>
+      </Page>
     );
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-6 md:px-7">
+      <Page width="content">
       <Link
         to="/decisions"
         className="inline-flex items-center gap-2 text-label text-muted transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
@@ -233,6 +234,6 @@ export default function DecisionDetail() {
             : 'Any member can pin a decision for the room.'}
         </p>
       </article>
-    </div>
+      </Page>
   );
 }

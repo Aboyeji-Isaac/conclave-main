@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import FlagAsTaskDialog from '../components/chat/FlagAsTaskDialog';
+import CreatePollDialog from '../components/chat/CreatePollDialog';
 import MessageComposer from '../components/chat/MessageComposer';
 import MessageTimeline from '../components/chat/MessageTimeline';
 import PinnedDecisionStrip from '../components/chat/PinnedDecisionStrip';
@@ -56,6 +57,7 @@ export default function Room() {
   const [deleting, setDeleting] = useState(null);
   const [promoting, setPromoting] = useState(null);
   const [flagging, setFlagging] = useState(null);
+  const [creatingPoll, setCreatingPoll] = useState(false);
 
   const scrollContainerRef = useRef(null);
 
@@ -233,7 +235,7 @@ export default function Room() {
 
         <div
           ref={scrollContainerRef}
-          className="row-start-2 min-h-0 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="row-start-2 min-h-0 overflow-y-auto overscroll-contain [overflow-anchor:none]"
         >
         {/* No in-room catch-up digest. markSeen below advances this room's
             last_seen_at on open, and getRoomDigest filters against exactly that
@@ -281,6 +283,9 @@ export default function Room() {
         className="row-start-3"
         disabled={!isConnected}
         onSend={sendMessage}
+        onCreatePoll={() => setCreatingPoll(true)}
+        onCreateDecision={() => setPromoting({ manual: true })}
+        onCreateTask={() => setFlagging({ manual: true })}
         members={members}
         onTyping={handleTyping}
         replyTo={replyTo}
@@ -347,6 +352,12 @@ export default function Room() {
         roomId={roomId}
         members={members}
         onCreated={handleTaskCreated}
+      />
+
+      <CreatePollDialog
+        open={creatingPoll}
+        onClose={() => setCreatingPoll(false)}
+        roomId={roomId}
       />
     </section>
   );

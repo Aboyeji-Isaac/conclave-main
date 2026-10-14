@@ -52,6 +52,77 @@ const ALLOWED_MIME_TYPES = new Set([
   'audio/mp4',
 ]);
 
+// The fallback for a declared type that means nothing. Several clients send
+// one of these instead of a real type: Windows has no idea what Markdown is
+// and files .md as application/octet-stream, and some send an empty
+// Content-Type for a text file. Rejecting those made ordinary files
+// unattachable, which is a worse outcome than trusting the extension — and an
+// extension is no less trustworthy than the declared type, which the note above
+// already records is not sniffed either way.
+const UNKNOWN_MIME_TYPES = new Set([
+  '',
+  'application/octet-stream',
+  'binary/octet-stream',
+  'application/x-unknown-content-type',
+  'application/binary',
+]);
+
+// Only extensions for types already on the allowlist are mapped, so this can
+// never widen it. `.mp4` and `.webm` are deliberately absent: the allowlist
+// holds audio/mp4 and audio/webm, and mapping the video extensions onto those
+// would let video in through the back door while video support is held back.
+// `.m4a` and `.weba` are the audio files those entries were meant for.
+const EXTENSION_MIME_TYPES = new Map([
+  ['svg', 'image/svg+xml'],
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
+  ['pdf', 'application/pdf'],
+  ['txt', 'text/plain'],
+  ['md', 'text/markdown'],
+  ['markdown', 'text/markdown'],
+  ['csv', 'text/csv'],
+  ['doc', 'application/msword'],
+  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['xls', 'application/vnd.ms-excel'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['ppt', 'application/vnd.ms-powerpoint'],
+  ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ['zip', 'application/zip'],
+  ['gz', 'application/gzip'],
+  ['mp3', 'audio/mpeg'],
+  ['ogg', 'audio/ogg'],
+  ['wav', 'audio/wav'],
+  ['weba', 'audio/webm'],
+  ['m4a', 'audio/mp4'],
+]);
+
+/**
+ * The mime type to record for an upload, or null if it must be refused.
+ *
+ * An allowlisted declared type always wins. Otherwise the type is consulted
+ * only when it is one of the meaningless ones above — a declared type we
+ * understand but do not allow (video, HTML, an executable) is still refused,
+ * because falling back to the extension there would be a way around the
+ * allowlist rather than a repair of a missing value.
+ *
+ * @param {string} mimetype - as declared by the client
+ * @param {string} filename - the original name, for the extension fallback
+ * @returns {string|null}
+ */
+function resolveMimetype(mimetype, filename) {
+  const declared = typeof mimetype === 'string' ? mimetype.trim().toLowerCase() : '';
+  if (ALLOWED_MIME_TYPES.has(declared)) return declared;
+  if (!UNKNOWN_MIME_TYPES.has(declared)) return null;
+
+  const name = typeof filename === 'string' ? filename : '';
+  const dot = name.lastIndexOf('.');
+  if (dot < 0 || dot === name.length - 1) return null;
+  return EXTENSION_MIME_TYPES.get(name.slice(dot + 1).toLowerCase()) || null;
+}
+
 // Keep in step with the multer limit in upload.routes.js. Redundant on the happy
 // path — multer rejects anything larger before we get here — but it means the
 // bound does not live in exactly one place.
@@ -154,17 +225,24 @@ const uploadFile = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'No file provided');
   }
 
-  const { buffer, mimetype, originalname } = req.file;
+  const { buffer, mimetype: declaredType, originalname } = req.file;
 
-  if (!ALLOWED_MIME_TYPES.has(mimetype)) {
-    throw new ApiError(415, `Unsupported file type: ${mimetype}`);
+  const filename = (originalname || 'upload').trim() || 'upload';
+
+  // Resolved before the resource type is chosen, not just before the row is
+  // written: a .png filed as application/octet-stream has to become image/png
+  // here or Cloudinary would be told to store it in the raw bucket, and an
+  // image that cannot be served back as an image is the failure this whole
+  // function exists to avoid.
+  const mimetype = resolveMimetype(declaredType, filename);
+
+  if (!mimetype) {
+    throw new ApiError(415, `Unsupported file type: ${declaredType || 'unknown'}`);
   }
 
   if (buffer.length > MAX_UPLOAD_BYTES) {
     throw new ApiError(413, 'File exceeds the 25MB limit');
   }
-
-  const filename = (originalname || 'upload').trim() || 'upload';
 
   let asset;
   const resourceType = resourceTypeFor(mimetype);
@@ -209,4 +287,11 @@ const uploadFile = asyncHandler(async (req, res) => {
   }, 201);
 });
 
-module.exports = { uploadFile, resourceTypeFor, ALLOWED_MIME_TYPES, MAX_UPLOAD_BYTES };
+module.exports = {
+  uploadFile,
+  resourceTypeFor,
+  resolveMimetype,
+  ALLOWED_MIME_TYPES,
+  EXTENSION_MIME_TYPES,
+  MAX_UPLOAD_BYTES,
+};

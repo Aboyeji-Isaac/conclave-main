@@ -11,6 +11,7 @@ const {
 } = require("../services/message.service");
 const { assertAllowedEmoji, attachReactions } = require("../services/reaction.service");
 const { attachPins: attachMessagePins, pinMessage, unpinMessage, listRoomPins } = require("../services/messagePin.service");
+const { attachPolls } = require("../services/poll.service");
 
 const PAGE_SIZE = 50;
 
@@ -130,13 +131,24 @@ const listMessages = asyncHandler(async (req, res) => {
 
   // 3. Attach reactions, then return with the cursor for the next page.
   //    One extra query for the whole page, not one per message.
-  const messages = await attachMessagePins(
-    await attachReactions(result.rows, req.user.id),
-    req.user.id,
+  const messages = await attachPolls(
+    await attachMessagePins(
+      await attachReactions(result.rows, req.user.id),
+      req.user.id,
+    ),
   );
   const last = messages[messages.length - 1];
+  // ISO rather than String(date): a Date interpolated into a template is
+  // rendered through toString(), which drops milliseconds and emits the local
+  // timezone name ("Tue Oct 13 2026 ... (West Africa Standard Time)"). The
+  // reader casts it back with ::timestamptz and a parser that never sees that
+  // format cannot recover the lost milliseconds, so a page boundary landing
+  // inside the same second skipped or repeated rows. Decisions already send
+  // ISO for the same reason.
   const nextCursor =
-    messages.length === PAGE_SIZE && last ? `${last.created_at}|${last.id}` : null;
+    messages.length === PAGE_SIZE && last
+      ? `${new Date(last.created_at).toISOString()}|${last.id}`
+      : null;
 
   return ok(res, { messages, nextCursor });
 });
@@ -192,9 +204,11 @@ async function getMessagePayload(messageId, viewerId) {
     throw new ApiError(404, "Message not found");
   }
 
-  const [message] = await attachMessagePins(
-    await attachReactions(result.rows, viewerId),
-    viewerId,
+  const [message] = await attachPolls(
+    await attachMessagePins(
+      await attachReactions(result.rows, viewerId),
+      viewerId,
+    ),
   );
   return message;
 }
@@ -285,9 +299,11 @@ const searchMessages = asyncHandler(async (req, res) => {
   );
 
   return ok(res, {
-    messages: await attachMessagePins(
-      await attachReactions(result.rows, req.user.id),
-      req.user.id,
+    messages: await attachPolls(
+      await attachMessagePins(
+        await attachReactions(result.rows, req.user.id),
+        req.user.id,
+      ),
     ),
     query: q.trim(),
   });
@@ -300,6 +316,12 @@ const editMessageHandler = asyncHandler(async (req, res) => {
   const { messageId } = req.params;
   const { content } = req.body;
   const io = req.app.get("io");
+
+  // A poll's question IS its message content. Editing it would mean the votes
+  // recorded underneath now answer different words, so the option is removed
+  // rather than hidden — clients hide Edit on a poll too.
+  const poll = await query(`SELECT 1 FROM polls WHERE message_id = $1`, [messageId]);
+  if (poll.rows.length > 0) throw new ApiError(400, "A poll cannot be edited");
 
   // `io` goes to the service first so the chat-list refresh happens at the
   // point of write. Re-read afterwards for the response.
