@@ -2,7 +2,7 @@ const { query } = require('../config/db');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const ApiError = require('../utils/ApiError');
-const { createNotification, presentNotification, emitNotification } = require('../services/notification.service');
+const { createNotification, presentNotification, emitNotification, personalRoom } = require('../services/notification.service');
 
 // In-chat Action Items — flag any message as a task, assign it, track
 // status in a per-room Tasks tab.
@@ -43,6 +43,20 @@ const TASK_JOINS = `
   FROM tasks t
   INNER JOIN rooms r ON r.id = t.room_id
   LEFT JOIN users a ON a.id = t.assignee_id`;
+
+// Only the people who can see a task are told it changed. The old emit went to
+// the whole room, which leaked every private task to every member.
+async function emitTaskUpdated(io, task) {
+  if (!io) return;
+  const admins = await query(
+    `SELECT user_id FROM room_members WHERE room_id = $1 AND role = 'admin'`,
+    [task.room_id],
+  );
+  const audience = new Set(
+    [task.assignee_id, task.created_by, ...admins.rows.map((row) => row.user_id)].filter(Boolean),
+  );
+  audience.forEach((id) => io.to(personalRoom(id)).emit('task:updated', { task }));
+}
 
 // ---------- createTask ----------
 // Flag a message as a task, optionally assigning it to a room member.
@@ -109,20 +123,13 @@ const createTask = asyncHandler(async (req, res) => {
 
   const task = result.rows[0];
 
-  // Announced so the room's Tasks tab updates live for everyone in it.
-  //
-  // Known limitation: this reaches only sockets that have joined this room, and
-  // joining is on-demand (client/src/hooks/useMessages.js emits join-room when a
-  // room view mounts). A user sitting on the top-level cross-room Tasks page has
-  // not joined the rooms it lists, so their board will not update live — only on
-  // reload. Fixing that needs a per-user task subscription rather than a change
-  // to this emit, so it is documented rather than built. The caller still gets
-  // the updated task in the response below, so the client that made the change
-  // is never left showing stale state.
+  // Announced only to the people who can see it: the assignee, the creator and
+  // the room's admins. Emitting to the room would have told every member that a
+  // private task exists, which the list query above deliberately hides from
+  // them. The caller still gets the task in the response, so the client that
+  // made the change is never left showing stale state.
   const io = req.app.get('io');
-  if (io) {
-    io.to(task.room_id).emit('task:updated', { task });
-  }
+  await emitTaskUpdated(io, task);
 
   /*
    * Tell the assignee.
@@ -179,12 +186,25 @@ const listTasks = asyncHandler(async (req, res) => {
     throw new ApiError(400, `status must be one of: ${STATUSES.join(', ')}`);
   }
 
-  // Params are numbered as they are added rather than pre-seeded with the user
-  // id. The room-scoped branch below authorises membership in its own query and
-  // never needs the user id again, so a pre-seeded $1 would go unreferenced —
-  // which Postgres rejects with "could not determine data type of parameter $1".
-  const params = [];
-  const filters = [];
+  // Visibility, not membership, is the scope. Three people may see a task: the
+  // assignee (it is theirs to do), the creator (otherwise an unassigned task
+  // would be invisible to the person who made it) and a room admin (otherwise
+  // nobody could moderate the board). Everyone else in the room is filtered out
+  // by the predicate rather than by a separate query, so the list and the
+  // single-task write path below can agree on one rule.
+  //
+  // $1 is pre-seeded because both branches reference it: the room-scoped branch
+  // repeats membership under a second parameter purely to return a 403 rather
+  // than an empty list.
+  const params = [req.user.id];
+  const filters = [
+    `(t.assignee_id = $1
+      OR t.created_by = $1
+      OR EXISTS (
+        SELECT 1 FROM room_members adm
+        WHERE adm.room_id = t.room_id AND adm.user_id = $1 AND adm.role = 'admin'
+      ))`,
+  ];
 
   if (roomId) {
     const membership = await query(
@@ -197,10 +217,9 @@ const listTasks = asyncHandler(async (req, res) => {
     params.push(roomId);
     filters.push(`t.room_id = $${params.length}`);
   } else {
-    // Membership is the scope: a task in a room you are not in is not merely
-    // filtered from the list, it should never have been selectable.
-    params.push(req.user.id);
-    filters.push(`t.room_id IN (SELECT room_id FROM room_members WHERE user_id = $${params.length})`);
+    // A task in a room you are not in is not merely filtered from the list, it
+    // should never have been selectable.
+    filters.push(`t.room_id IN (SELECT room_id FROM room_members WHERE user_id = $1)`);
   }
 
   if (status) {
@@ -237,17 +256,20 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
     throw new ApiError(400, `status must be one of: ${STATUSES.join(', ')}`);
   }
 
-  // Membership is checked against the task's own room, read in the same query
-  // that loads it, so there is no window between authorising and acting.
+  // The same three-way visibility rule as the list, read in the query that loads
+  // the task so there is no window between authorising and acting. A plain
+  // membership join let any member of the room move a task they were never
+  // meant to see.
   const existing = await query(
     `SELECT t.id, t.room_id
-     FROM tasks t
-     INNER JOIN room_members rm ON rm.room_id = t.room_id AND rm.user_id = $2
-     WHERE t.id = $1`,
+       FROM tasks t
+       INNER JOIN room_members rm ON rm.room_id = t.room_id AND rm.user_id = $2
+      WHERE t.id = $1
+        AND (t.assignee_id = $2 OR t.created_by = $2 OR rm.role = 'admin')`,
     [taskId, req.user.id],
   );
   if (existing.rows.length === 0) {
-    throw new ApiError(404, 'Task not found or you are not a member of its room');
+    throw new ApiError(404, 'Task not found');
   }
 
   // updated_at is set explicitly because nothing else maintains it, and the
@@ -269,10 +291,7 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
 
   const task = result.rows[0];
 
-  const io = req.app.get('io');
-  if (io) {
-    io.to(task.room_id).emit('task:updated', { task });
-  }
+  await emitTaskUpdated(req.app.get('io'), task);
 
   return ok(res, task);
 });

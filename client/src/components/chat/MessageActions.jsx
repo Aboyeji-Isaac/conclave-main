@@ -84,7 +84,10 @@ export default function MessageActions({
 
   const items = [
     { key: "reply", label: "Reply", Icon: IconReply, onClick: onReply },
-    ...(isMine
+    // Edit is omitted on a poll: its question IS the message content, so
+    // editing the text would silently change what the recorded votes answer,
+    // and the server rejects it outright with 400.
+    ...(isMine && !message.poll
       ? [{ key: "edit", label: "Edit", Icon: IconCompose, onClick: onEdit }]
       : []),
     {

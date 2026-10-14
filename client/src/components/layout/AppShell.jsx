@@ -3,28 +3,34 @@ import { Outlet } from 'react-router-dom';
 import { ChatsProvider } from '@/contexts/ChatsContext';
 import { NotificationsProvider } from '@/contexts/NotificationsContext';
 import { PresenceProvider } from '@/contexts/PresenceContext';
+import useMediaQuery from '@/hooks/useMediaQuery';
+import usePersistentState from '@/hooks/usePersistentState';
 import Navbar from '../Navbar';
 import BottomNav from './BottomNav';
 import NavRail from './NavRail';
 
 /**
- * The app shell.
+ * The app shell: rail, header, content.
  *
- * Three panes at `md` and up — rail, header, content — and the same three
- * collapsed below it: the rail becomes a drawer, the header keeps its menu
- * button, and a bottom tab bar takes over navigation. The content area never
- * scrolls as a page; each route owns its own overflow, which is what lets the
- * chat list and the message timeline scroll independently instead of fighting
- * over one scrollbar.
+ * At md and up the rail is a slim icon column that the header's sidebar button
+ * expands to show labels, and the choice is remembered. Below md the rail is a
+ * drawer opened by the same button. Each route owns its own overflow, so the
+ * chat list and the timeline scroll independently.
  *
- * The `setRoomHeader` outlet context is how a route replaces the header title
- * with something richer than a string — Room passes a component carrying the
- * member count and the live-connection dot. Anything else would mean the shell
- * reaching into route state.
+ * `setRoomHeader` is how a route replaces the header title with something
+ * richer than a string.
  */
 export default function AppShell() {
   const [roomHeader, setRoomHeader] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [expanded, setExpanded] = usePersistentState('conclave.sidebar.expanded', false);
+  const isDesktop = useMediaQuery('(min-width: 768px)');
+
+  // Growing the window past md with the drawer open would leave an overlay on a
+  // layout that no longer has one.
+  useEffect(() => {
+    if (isDesktop) setDrawerOpen(false);
+  }, [isDesktop]);
 
   useEffect(() => {
     if (!drawerOpen) return undefined;
@@ -35,6 +41,17 @@ export default function AppShell() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [drawerOpen]);
 
+  const toggleSidebar = () => {
+    if (isDesktop) setExpanded((value) => !value);
+    else setDrawerOpen(true);
+  };
+
+  const sidebarLabel = isDesktop
+    ? expanded
+      ? 'Collapse sidebar'
+      : 'Expand sidebar'
+    : 'Open menu';
+
   return (
     // Every provider here sits at the shell rather than at the root for the
     // same reason: each needs a valid session, and at the root they would all
@@ -44,21 +61,22 @@ export default function AppShell() {
     <PresenceProvider>
       <NotificationsProvider>
         <ChatsProvider>
-          <div className="grid h-dvh min-h-0 grid-cols-1 bg-canvas text-ink md:grid-cols-[240px_1fr] lg:grid-cols-[248px_1fr]">
+          <div
+            style={{ '--rail-w': expanded ? '240px' : '72px' }}
+            className="grid h-dvh min-h-0 grid-cols-1 bg-canvas text-ink md:grid-cols-[var(--rail-w)_1fr] motion-safe:md:transition-[grid-template-columns] motion-safe:md:duration-200"
+          >
             <aside className="hidden min-h-0 border-r border-line bg-surface md:block">
-              <NavRail />
+              <NavRail collapsed={!expanded} />
             </aside>
 
-            {/*
-             * `grid-cols-1` is required, not decorative. Specifying rows without
-             * columns leaves the implicit column at `auto`, which sizes to
-             * max-content — so one long decision title widened the whole shell
-             * and pushed the document to 563px inside a 390px viewport, making
-             * every page scroll sideways. `grid-cols-1` resolves to
-             * `minmax(0, 1fr)`, which is the grid-blowout guard.
-             */}
+            {/* grid-cols-1 is the grid-blowout guard: without it one long title
+                widens the whole shell. */}
             <div className="grid min-h-0 grid-cols-1 grid-rows-[auto_1fr_auto]">
-              <Navbar roomHeader={roomHeader} onMenuClick={() => setDrawerOpen(true)} />
+              <Navbar
+                roomHeader={roomHeader}
+                onMenuClick={toggleSidebar}
+                menuLabel={sidebarLabel}
+              />
               <main className="min-h-0 min-w-0 bg-surface">
                 <Outlet context={{ setRoomHeader }} />
               </main>
@@ -72,7 +90,7 @@ export default function AppShell() {
                   onClick={() => setDrawerOpen(false)}
                   aria-hidden="true"
                 />
-                <div className="absolute left-0 top-0 h-full w-[220px] overscroll-contain border-r border-line bg-surface shadow-modal">
+                <div className="absolute left-0 top-0 h-full w-[min(280px,85vw)] overscroll-contain border-r border-line bg-surface shadow-modal">
                   <NavRail onNavigate={() => setDrawerOpen(false)} />
                 </div>
               </div>

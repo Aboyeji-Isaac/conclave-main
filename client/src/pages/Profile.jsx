@@ -11,6 +11,7 @@ import Textarea from '@/components/ui/Textarea';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { uploadAvatar } from '@/services/users.service';
+import Page from '@/components/layout/Page';
 
 /**
  * Profile — the signed-in user's own account.
@@ -114,7 +115,7 @@ export default function Profile() {
   }
 
   return (
-    <div className="mx-auto h-full min-h-0 max-w-2xl overflow-y-auto px-4 py-8 md:px-7">
+      <Page width="form">
       <h1 className="text-h1 text-ink">Profile</h1>
       <p className="mt-2 text-body leading-relaxed text-muted">
         How you appear to everyone else in the workspace.
@@ -219,6 +220,6 @@ export default function Profile() {
           registered again — but nothing you wrote comes back with it.
         </p>
       </Modal>
-    </div>
+      </Page>
   );
 }

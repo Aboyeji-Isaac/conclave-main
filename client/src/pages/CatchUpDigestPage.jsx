@@ -4,6 +4,7 @@ import EmptyState from '../components/ui/EmptyState';
 import Button from '../components/ui/Button';
 import Spinner from '../components/ui/Spinner';
 import { getUserDigest, markDigestRead } from '../services/digest.service';
+import Page from '@/components/layout/Page';
 
 // Type-to-label/colour mapping lives here, not in the fixtures — the backend
 // sends a bare `type`, never display copy. Five types exist on the server
@@ -102,16 +103,16 @@ export default function CatchUpDigestPage() {
 
   if (error) {
     return (
-      <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-[22px] md:pt-7">
+      <Page width="content">
         <p role="alert" className="rounded-lg bg-error/10 p-4 text-body text-error">{error}</p>
-      </div>
+      </Page>
     );
   }
 
   const items = digest?.items || [];
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-[22px] md:pt-7">
+      <Page width="content">
       {items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line">
           <EmptyState
@@ -145,6 +146,6 @@ export default function CatchUpDigestPage() {
           </div>
         </>
       )}
-    </div>
+      </Page>
   );
 }

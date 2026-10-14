@@ -16,6 +16,7 @@ import { useRealtime } from '@/contexts/RealtimeContext';
 import { useToast } from '@/contexts/ToastContext';
 import { addMember, removeMember, setMemberRole, updateRoom } from '@/services/rooms.service';
 import { searchUsers } from '@/services/users.service';
+import Page from '@/components/layout/Page';
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -209,7 +210,7 @@ export default function RoomInfo() {
   }
 
   return (
-    <div className="mx-auto h-full min-h-0 max-w-2xl overflow-y-auto px-4 py-8 md:px-7">
+      <Page width="form">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-h1 text-ink">{room?.display_name || room?.name || 'Room'}</h1>
@@ -363,7 +364,7 @@ export default function RoomInfo() {
           })}
         </ul>
       </section>
-    </div>
+      </Page>
   );
 }
 

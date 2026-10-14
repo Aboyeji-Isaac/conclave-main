@@ -57,6 +57,17 @@ html.dark {
   --shadow-modal: 0 12px 28px 0 rgba(0, 0, 0, 0.5);
 }
 
+:root {
+  --rail-w: 72px;
+  --list-w: 320px;
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --list-w: 360px;
+  }
+}
+
 @layer base {
   /*
     Tailwind's preflight sets a hardcoded #e5e7eb as the default border colour,
@@ -83,4 +94,62 @@ html.dark {
   button, input, textarea { font: inherit; }
   * { box-sizing: border-box; }
   html, body, #root { height: 100%; }
+}
+
+@layer base {
+  /*
+    Scrollbars, rebuilt rather than inherited.
+
+    The UA default is an opaque ~15px slab that reserves space inside every
+    pane it is attached to, so it steals width from the chat list, sits inside
+    the timeline instead of at the window's edge, and cannot be themed — a dark
+    surface would get a light track. Both properties are set at once because
+    Firefox reads only `scrollbar-*` and Chrome/WebKit reads only
+    `::-webkit-scrollbar`, and specifying one leaves the other browser on the
+    default. `auto` track rather than `transparent`: the thumb still needs a
+    rail to sit on.
+  */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--color-line)) auto;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--color-line));
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--color-muted));
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /*
+    Hide the scrollbar without hiding the scroll. Applied to things that scroll
+    on a drag/trackpad gesture and must not show a bar that eats into a control:
+    the horizontal chip rail, and the attachment thumbnail rail inside the
+    full-screen preview. Overflow stays `auto`, so the gesture keeps working.
+  */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }

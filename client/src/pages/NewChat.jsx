@@ -11,6 +11,7 @@ import Spinner from '@/components/ui/Spinner';
 import { useToast } from '@/contexts/ToastContext';
 import { createRoom } from '@/services/rooms.service';
 import { searchUsers } from '@/services/users.service';
+import Page from '@/components/layout/Page';
 
 // Long enough that typing a name is not a request per keystroke, short enough
 // that the list feels attached to the keyboard rather than lagging behind it.
@@ -134,7 +135,7 @@ export default function NewChat() {
   const canCreateGroup = groupName.trim().length > 0 && selected.length > 0;
 
   return (
-    <div className="mx-auto h-full min-h-0 max-w-2xl overflow-y-auto px-4 py-8 md:px-7">
+      <Page width="form">
       <h1 className="text-h1 text-ink">New chat</h1>
       <p className="mt-2 text-body leading-relaxed text-muted">
         Message someone directly, or gather several people into a new room.
@@ -264,6 +265,6 @@ export default function NewChat() {
           </Button>
         </form>
       )}
-    </div>
+      </Page>
   );
 }

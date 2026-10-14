@@ -5,6 +5,7 @@ const { isMentioned } = require('./mention.service');
 const { getRoomOnlineUsers } = require('./presence.service');
 const { attachReactions } = require('./reaction.service');
 const { attachPins } = require('./messagePin.service');
+const { attachPolls } = require('./poll.service');
 
 // Kept in step with the multer limit in routes/upload.routes.js.
 const MAX_ATTACHMENTS = 10;
@@ -77,7 +78,7 @@ function serializeAttachment(row) {
  *   without it the mentions simply are not pushed live.
  * @returns {object} The inserted message row enriched with sender info and attachments
  */
-async function createMessage({ roomId, senderId, content, replyToId, attachments, mentionedUserIds, io }) {
+async function createMessage({ roomId, senderId, content, replyToId, attachments, mentionedUserIds, inTransaction, io }) {
   const cleanAttachments = validateAttachments(attachments);
   const hasContent = typeof content === 'string' && content.trim().length > 0;
 
@@ -137,6 +138,11 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
       [roomId, senderId, hasContent ? content.trim() : null, replyToId || null],
     );
     message = result.rows[0];
+
+    // Lets a caller write rows that must live or die with the message, such as
+    // a poll and its options, inside the same transaction. Runs before the
+    // attachment claim so a rejected poll rolls the message back too.
+    if (inTransaction) await inTransaction(client, message);
 
     // Claim each upload before inserting its attachment row. One statement does
     // the lookup, the ownership check and the one-time-use check: the
@@ -247,7 +253,7 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
   // Reactions are attached for the same reason the other payload fields are: all
   // six surfaces return one message shape, and a message that was just created has
   // none, so this is always [].
-  const [payload] = await attachPins(await attachReactions([{
+  const [payload] = await attachPolls(await attachPins(await attachReactions([{
     ...message,
     sender_name: sender.rows[0]?.display_name || null,
     sender_avatar: sender.rows[0]?.avatar_url || null,
@@ -255,7 +261,7 @@ async function createMessage({ roomId, senderId, content, replyToId, attachments
     // Exposed so the client can style a real mention rather than regex-matching
     // the text, and so a client can learn which ids a send actually resolved to.
     mentioned_user_ids: mentionedIds,
-  }], senderId), senderId);
+  }], senderId), senderId));
 
   return payload;
 }

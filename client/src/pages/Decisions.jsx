@@ -6,6 +6,7 @@ import Button from '@/components/ui/Button';
 import EmptyState from '@/components/ui/EmptyState';
 import Spinner from '@/components/ui/Spinner';
 import { listDecisions, searchDecisions } from '@/services/decisions.service';
+import Page from '@/components/layout/Page';
 
 function formatDate(value) {
   const date = new Date(value);
@@ -122,7 +123,7 @@ export default function Decisions() {
   };
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-6 md:pt-9">
+      <Page width="content">
       <div className="flex items-start justify-between gap-4">
         <label className="block w-[300px]">
           <span className="mb-2 block text-label text-ink">Search</span>
@@ -179,6 +180,6 @@ export default function Decisions() {
           ))}
         </div>
       )}
-    </div>
+      </Page>
   );
 }

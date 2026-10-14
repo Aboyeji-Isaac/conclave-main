@@ -135,6 +135,7 @@ const TABLES = [
   'rooms', 'users', 'messages', 'attachments', 'decisions', 'tasks',
   'room_members', 'message_reactions', 'notifications', 'refresh_tokens',
   'file_uploads', 'decision_pins',
+  'polls', 'poll_options', 'poll_votes',
 ];
 
 // --- Schema ------------------------------------------------------------------
@@ -4437,4 +4438,406 @@ dbTest('a message notifies a member who is not present, but not one who is', asy
     // Left open, the client would keep the test process alive after the suite.
     if (connectedHere) await redisClient.quit();
   }
+});
+
+// --- Task visibility: assignee, creator and room admin only ------------------
+//
+// The list and the write path share one predicate, so each test below is run
+// against both: a task a member cannot SEE, they also cannot MOVE.
+
+dbTest('a task is hidden from a member who is neither the assignee nor the creator', async () => {
+  const run = Date.now();
+  const admin = await authedAccount(`tv2-admin-${run}@test.com`);
+  const bystander = await authedAccount(`tv2-bystander-${run}@test.com`);
+  const assignee = await authedAccount(`tv2-assignee-${run}@test.com`);
+
+  const room = await createRoomVia(admin.token, {
+    name: `Task Visibility Two ${run}`,
+    memberIds: [bystander.userId, assignee.userId],
+  });
+
+  const created = await fetch(`${baseUrl}/api/tasks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${admin.token}` },
+    body: JSON.stringify({ roomId: room.id, title: 'Watch the thing', assigneeId: assignee.userId }),
+  });
+  const createdBody = await created.text();
+  assert.equal(created.status, 201, createdBody);
+  const task = JSON.parse(createdBody).data;
+
+  const titlesFor = async (token, query = '') => {
+    const res = await fetch(`${baseUrl}/api/tasks${query}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = await res.text();
+    assert.equal(res.status, 200, body);
+    return JSON.parse(body).data.tasks.map((t) => t.title);
+  };
+
+  // The assignee is not the creator, so this is the case that used to be
+  // indistinguishable from everybody else seeing it.
+  assert.ok(
+    (await titlesFor(assignee.token)).includes(task.title),
+    'the assignee must see the task assigned to them',
+  );
+  assert.ok(
+    (await titlesFor(admin.token)).includes(task.title),
+    'the creator — who is also the room admin — must see it',
+  );
+  assert.ok(
+    !(await titlesFor(bystander.token)).includes(task.title),
+    'a plain member must not be shown a task they cannot act on',
+  );
+
+  // Room-scoped reads agree with the cross-room list rather than widening it.
+  const scoped = await titlesFor(bystander.token, `?roomId=${room.id}`);
+  assert.ok(!scoped.includes(task.title), 'the room-scoped list hides it too');
+
+  // And the write path agrees with the read path.
+  const patch = await fetch(`${baseUrl}/api/tasks/${task.id}/status`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${bystander.token}` },
+    body: JSON.stringify({ status: 'done' }),
+  });
+  const patchBody = await patch.text();
+  assert.equal(patch.status, 404, `a bystander must not move a task: ${patch.status} ${patchBody}`);
+
+  const asAdmin = await fetch(`${baseUrl}/api/tasks/${task.id}/status`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${admin.token}` },
+    body: JSON.stringify({ status: 'in_progress' }),
+  });
+  assert.equal(asAdmin.status, 200, await asAdmin.text());
+});
+
+dbTest('an unassigned task stays visible to the person who created it', async () => {
+  const run = Date.now();
+  const admin = await authedAccount(`tv3-admin-${run}@test.com`);
+  const bystander = await authedAccount(`tv3-bystander-${run}@test.com`);
+
+  const room = await createRoomVia(admin.token, {
+    name: `Task Visibility Three ${run}`,
+    memberIds: [bystander.userId],
+  });
+
+  const created = await fetch(`${baseUrl}/api/tasks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${admin.token}` },
+    body: JSON.stringify({ roomId: room.id, title: 'Nobody owns this yet' }),
+  });
+  assert.equal(created.status, 201, await created.text());
+
+  const titles = async (token) => {
+    const res = await fetch(`${baseUrl}/api/tasks`, { headers: { authorization: `Bearer ${token}` } });
+    const body = await res.text();
+    assert.equal(res.status, 200, body);
+    return JSON.parse(body).data.tasks.map((t) => t.title);
+  };
+
+  // Without the creator clause this would be invisible forever: it has no
+  // assignee, and a plain member cannot see it, so only the admin role saves it.
+  assert.ok(
+    (await titles(admin.token)).includes('Nobody owns this yet'),
+    'the creator of an unassigned task must still be able to find it',
+  );
+  assert.ok(
+    !(await titles(bystander.token)).includes('Nobody owns this yet'),
+    'and it must still be hidden from everyone else',
+  );
+});
+
+// --- Polls -------------------------------------------------------------------
+
+dbTest('a poll is created as a message and carries its options, with nobody having voted', async () => {
+  const run = Date.now();
+  const me = await authedAccount(`poll-create-${run}@test.com`);
+  const room = await createRoomVia(me.token, { name: `Poll Create ${run}` });
+
+  const res = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, question: `Lunch ${run}?`, options: ['Pizza', 'Sushi', ' '] }),
+  });
+  const body = await res.text();
+  assert.equal(res.status, 201, body);
+  const message = JSON.parse(body).data;
+
+  assert.equal(message.content, `Lunch ${run}?`, 'the question travels as the message content');
+  assert.ok(message.poll, 'the created message must carry its poll');
+  assert.equal(message.poll.question, `Lunch ${run}?`);
+  assert.deepEqual(
+    message.poll.options.map((o) => o.label),
+    ['Pizza', 'Sushi'],
+    'a blank option is dropped rather than stored as an empty choice',
+  );
+  assert.equal(message.poll.voter_count, 0, 'nobody has voted yet');
+  assert.equal(message.poll.closed_at, null, 'a new poll is open');
+
+  // The same poll comes back through the ordinary message read path, so the
+  // timeline, search and history all agree on one shape.
+  const listed = await findMessageVia(me.token, room.id, message.id);
+  assert.ok(listed.poll, 'listMessages must attach the poll');
+  assert.deepEqual(
+    listed.poll.options.map((o) => o.id),
+    message.poll.options.map((o) => o.id),
+    'and the options must be the same ones',
+  );
+});
+
+dbTest('poll input is validated before anything is written', async () => {
+  const run = Date.now();
+  const me = await authedAccount(`poll-validate-${run}@test.com`);
+  const room = await createRoomVia(me.token, { name: `Poll Validate ${run}` });
+
+  const send = (payload) => fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, ...payload }),
+  });
+
+  assert.equal((await send({ question: '', options: ['a', 'b'] })).status, 400, 'a question is required');
+  assert.equal((await send({ question: 'Q', options: ['only'] })).status, 400, 'two options minimum');
+  assert.equal(
+    (await send({ question: 'Q', options: ['Same', 'same'] })).status,
+    400,
+    'two identical choices would split votes nobody can tell apart',
+  );
+  assert.equal(
+    (await send({ question: 'Q', options: Array.from({ length: 13 }, (_, i) => `O${i}`) })).status,
+    400,
+    'the option ceiling is enforced',
+  );
+
+  const noRoom = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ question: 'Q', options: ['a', 'b'] }),
+  });
+  assert.equal(noRoom.status, 400, 'a poll needs a room');
+});
+
+dbTest('votes are attributed by name and counted per voter, not per vote', async () => {
+  const run = Date.now();
+  const me = await authedAccount(`poll-vote-${run}@test.com`);
+  const them = await authedAccount(`poll-vote2-${run}@test.com`);
+  const room = await createRoomVia(me.token, { name: `Poll Vote ${run}`, memberIds: [them.userId] });
+
+  const created = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, question: `Pick ${run}`, options: ['A', 'B'] }),
+  });
+  const createdBody = await created.text();
+  assert.equal(created.status, 201, createdBody);
+  const message = JSON.parse(createdBody).data;
+  const poll = message.poll;
+  const [optionA, optionB] = poll.options;
+
+  const vote = (token, pollId, optionIds) => fetch(`${baseUrl}/api/polls/${pollId}/vote`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ optionIds }),
+  });
+
+  assert.equal((await vote(me.token, poll.id, [optionA.id])).status, 200);
+  assert.equal((await vote(them.token, poll.id, [optionB.id])).status, 200);
+
+  const listed = await findMessageVia(me.token, room.id, message.id);
+  const a = listed.poll.options.find((o) => o.id === optionA.id);
+  const b = listed.poll.options.find((o) => o.id === optionB.id);
+
+  assert.equal(a.voters.length, 1, 'one vote on A');
+  assert.equal(a.voters[0].id, me.userId, 'and it is attributed to the person who cast it');
+  assert.equal(a.voters[0].display_name, 'Task Tester', 'the voter is named, not merely counted');
+  assert.ok(typeof a.voters[0].avatar_url !== 'undefined', 'so a client can render an avatar');
+  assert.equal(b.voters.length, 1, 'one vote on B');
+  assert.equal(listed.poll.voter_count, 2, 'two people voted, so two voters — not two votes');
+
+  // Two members read the same poll: votes are public, so neither view differs.
+  const theirs = await findMessageVia(them.token, room.id, message.id);
+  assert.equal(theirs.poll.voter_count, listed.poll.voter_count, 'both viewers agree on the tally');
+  assert.equal(
+    theirs.poll.options.find((o) => o.id === optionA.id).voters[0].id,
+    me.userId,
+    'and both see who voted for what',
+  );
+});
+
+dbTest('a single-choice vote replaces the previous one; multi-choice accumulates', async () => {
+  const run = Date.now();
+  const me = await authedAccount(`poll-single-${run}@test.com`);
+  const room = await createRoomVia(me.token, { name: `Poll Single ${run}` });
+
+  const create = (question, allowMultiple) => fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, question, options: ['A', 'B', 'C'], allowMultiple }),
+  }).then(async (r) => {
+    const b = await r.text();
+    assert.equal(r.status, 201, b);
+    const message = JSON.parse(b).data;
+    return { poll: message.poll, messageId: message.id };
+  });
+
+  const vote = (pollId, optionIds) => fetch(`${baseUrl}/api/polls/${pollId}/vote`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ optionIds }),
+  });
+
+  const single = await create(`Single ${run}`, false);
+  const [a, b] = single.poll.options;
+
+  assert.equal((await vote(single.poll.id, [a.id])).status, 200);
+  assert.equal((await vote(single.poll.id, [b.id])).status, 200);
+
+  const afterSingle = (await findMessageVia(me.token, room.id, single.messageId)).poll;
+  assert.deepEqual(
+    afterSingle.options.map((o) => o.voters.length),
+    [0, 1, 0],
+    'voting again moves the vote rather than adding a second one',
+  );
+
+  // Asking for two on a single-choice poll is refused rather than silently
+  // picking the first — a caller that thinks otherwise deserves to know.
+  const greedy = await vote(single.poll.id, [a.id, b.id]);
+  assert.equal(greedy.status, 400, await greedy.text());
+
+  const multi = await create(`Multi ${run}`, true);
+  assert.equal(
+    (await vote(multi.poll.id, [multi.poll.options[0].id, multi.poll.options[1].id])).status,
+    200,
+  );
+  const afterMulti = (await findMessageVia(me.token, room.id, multi.messageId)).poll;
+  assert.deepEqual(
+    afterMulti.options.map((o) => o.voters.length),
+    [1, 1, 0],
+    'a multi-choice poll holds both votes at once',
+  );
+
+  // An empty list is how you take your vote back.
+  assert.equal((await vote(multi.poll.id, [])).status, 200);
+  const cleared = (await findMessageVia(me.token, room.id, multi.messageId)).poll;
+  assert.equal(cleared.voter_count, 0, 'an empty vote list removes the vote entirely');
+});
+
+dbTest('a vote must name options from its own poll, and only members may vote', async () => {
+  const run = Date.now();
+  const me = await authedAccount(`poll-scope-${run}@test.com`);
+  const outsider = await authedAccount(`poll-outsider-${run}@test.com`);
+  const room = await createRoomVia(me.token, { name: `Poll Scope ${run}` });
+
+  const create = (question) => fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, question, options: ['A', 'B'] }),
+  }).then(async (r) => { const b = await r.text(); assert.equal(r.status, 201, b); return JSON.parse(b).data.poll; });
+
+  const first = await create(`First ${run}`);
+  const second = await create(`Second ${run}`);
+
+  const vote = (token, pollId, optionIds) => fetch(`${baseUrl}/api/polls/${pollId}/vote`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ optionIds }),
+  });
+
+  // Crossing the two polls would let a vote be recorded against an option that
+  // is not in the poll it claims to be in — the composite foreign key stops the
+  // insert, but the caller gets a 400 first rather than a raw 23503.
+  const crossed = await vote(me.token, first.id, [second.options[0].id]);
+  assert.equal(crossed.status, 400, await crossed.text());
+
+  const stranger = await vote(outsider.token, first.id, [first.options[0].id]);
+  assert.equal(stranger.status, 404, `a non-member must not learn the poll exists: ${stranger.status}`);
+
+  const malformed = await vote(me.token, first.id, 'not-an-array');
+  assert.equal(malformed.status, 400, 'a non-array payload is a 400, not a 500');
+});
+
+dbTest('only the poll creator or a room admin may close a poll, and closing stops votes', async () => {
+  const run = Date.now();
+  const owner = await authedAccount(`poll-close-owner-${run}@test.com`);
+  const admin = await authedAccount(`poll-close-admin-${run}@test.com`);
+  const bystander = await authedAccount(`poll-close-member-${run}@test.com`);
+
+  // owner and bystander are plain members; admin created the room and is the
+  // one non-creator whose opinion the rule also accepts.
+  const room = await createRoomVia(admin.token, {
+    name: `Poll Close ${run}`,
+    memberIds: [owner.userId, bystander.userId],
+  });
+
+  const created = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ roomId: room.id, question: `Close ${run}?`, options: ['Yes', 'No'] }),
+  });
+  const createdBody = await created.text();
+  assert.equal(created.status, 201, createdBody);
+  const message = JSON.parse(createdBody).data;
+  const poll = message.poll;
+
+  const close = (token) => fetch(`${baseUrl}/api/polls/${poll.id}/close`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  });
+
+  const denied = await close(bystander.token);
+  assert.equal(denied.status, 403, `a plain member must not close it: ${denied.status}`);
+
+  const allowed = await close(admin.token);
+  assert.equal(allowed.status, 200, `a room admin who did not make it may close it: ${await allowed.text()}`);
+
+  const closed = (await findMessageVia(owner.token, room.id, message.id)).poll;
+  assert.ok(closed.closed_at, 'a closed poll records when');
+
+  const late = await fetch(`${baseUrl}/api/polls/${poll.id}/vote`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ optionIds: [poll.options[0].id] }),
+  });
+  assert.equal(late.status, 409, `a closed poll refuses votes: ${late.status}`);
+  assert.equal(
+    (await findMessageVia(bystander.token, room.id, message.id)).poll.closed_at !== null,
+    true,
+    'and every member sees that it is closed',
+  );
+
+  // Closing is one-way and does not erase the tally.
+  const again = await close(admin.token);
+  assert.equal(again.status, 200, 'closing an already closed poll is not an error');
+});
+
+dbTest('a poll question cannot be edited, because the votes underneath it would answer different words', async () => {
+  const run = Date.now();
+  const me = await authedAccount(`poll-edit-${run}@test.com`);
+  const room = await createRoomVia(me.token, { name: `Poll Edit ${run}` });
+
+  const created = await fetch(`${baseUrl}/api/polls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ roomId: room.id, question: `Original ${run}`, options: ['A', 'B'] }),
+  });
+  const createdBody = await created.text();
+  assert.equal(created.status, 201, createdBody);
+  const message = JSON.parse(createdBody).data;
+
+  const edit = await fetch(`${baseUrl}/api/messages/${message.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ content: 'Rewritten after the fact' }),
+  });
+  const editBody = await edit.text();
+  assert.equal(edit.status, 400, `editing a poll must be refused: ${edit.status} ${editBody}`);
+
+  // An ordinary message from the same person still edits fine, so the guard is
+  // on the poll, not on the author.
+  const plain = await sendVia(me.token, room.id, 'Just words');
+  const plainEdit = await fetch(`${baseUrl}/api/messages/${plain.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${me.token}` },
+    body: JSON.stringify({ content: 'Still just words' }),
+  });
+  assert.equal(plainEdit.status, 200, await plainEdit.text());
 });

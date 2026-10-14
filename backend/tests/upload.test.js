@@ -45,7 +45,12 @@ process.env.JWT_REFRESH_SECRET ||= 'upload-test-refresh-secret';
 process.env.CLIENT_ORIGIN ||= 'http://localhost:5173';
 
 const cloudinary = require('../src/config/cloudinary');
-const { ALLOWED_MIME_TYPES, uploadFile } = require('../src/controllers/upload.controller');
+const {
+  ALLOWED_MIME_TYPES,
+  EXTENSION_MIME_TYPES,
+  resolveMimetype,
+  uploadFile,
+} = require('../src/controllers/upload.controller');
 
 // --- The no-database checks --------------------------------------------------
 
@@ -74,6 +79,53 @@ test('the MIME allowlist covers the agreed types and no video', () => {
   for (const t of ['application/x-msdownload', 'application/x-sh', 'application/javascript']) {
     assert.ok(!ALLOWED_MIME_TYPES.has(t), `${t} must be rejected`);
   }
+});
+
+// --- The extension fallback -------------------------------------------------
+//
+// Windows files .md as application/octet-stream, and some clients send an
+// empty Content-Type. Without the fallback both were a hard 415 on a file the
+// allowlist was perfectly happy to hold — which is what this repairs.
+
+test('an allowlisted declared type is used as-is, whatever the extension says', () => {
+  assert.equal(resolveMimetype('image/png', 'notes.md'), 'image/png');
+  assert.equal(resolveMimetype('TEXT/MARKDOWN', 'readme.txt'), 'text/markdown');
+  assert.equal(resolveMimetype('application/pdf', 'invoice'), 'application/pdf');
+});
+
+test('a missing or meaningless type falls back to the file extension', () => {
+  assert.equal(resolveMimetype('application/octet-stream', 'notes.md'), 'text/markdown');
+  assert.equal(resolveMimetype('', 'notes.md'), 'text/markdown');
+  assert.equal(resolveMimetype('application/octet-stream', 'PHOTO.PNG'), 'image/png');
+  assert.equal(resolveMimetype('application/x-unknown-content-type', 'a.tar.zip'), 'application/zip');
+  assert.equal(resolveMimetype(undefined, 'song.m4a'), 'audio/mp4');
+});
+
+test('the fallback never yields a type outside the allowlist', () => {
+  for (const [ext, mime] of EXTENSION_MIME_TYPES) {
+    assert.ok(ALLOWED_MIME_TYPES.has(mime), `.${ext} maps to ${mime}, which is not allowed`);
+    assert.equal(resolveMimetype('application/octet-stream', `f.${ext}`), mime);
+  }
+});
+
+test('a declared type we understand but do not allow is still refused', () => {
+  // Falling back to the extension here would be a way around the allowlist
+  // rather than a repair of a missing value.
+  assert.equal(resolveMimetype('video/mp4', 'clip.mp4'), null);
+  assert.equal(resolveMimetype('text/html', 'page.html'), null);
+  assert.equal(resolveMimetype('application/x-sh', 'install.sh'), null);
+});
+
+test('the video and executable extensions are not a back door', () => {
+  for (const name of ['clip.mp4', 'clip.webm', 'page.html', 'run.exe', 'setup.sh']) {
+    assert.equal(resolveMimetype('application/octet-stream', name), null, `${name} must stay refused`);
+  }
+});
+
+test('an unrecognised extension with a meaningless type is refused', () => {
+  assert.equal(resolveMimetype('application/octet-stream', 'archive.7z'), null);
+  assert.equal(resolveMimetype('application/octet-stream', 'noextension'), null);
+  assert.equal(resolveMimetype('application/octet-stream', 'trailing.'), null);
 });
 
 test('isConfigured reflects whether the SDK has usable credentials', () => {
@@ -128,6 +180,23 @@ test('video is rejected with 415 while video support is held back', async () => 
   });
   assert.ok(error);
   assert.equal(error.status, 415);
+});
+
+test('a .md filed as octet-stream now clears the type check', async () => {
+  if (!cloudinary.isConfigured()) return;
+  // Oversized on purpose: it stops at the size bound, which sits *after* the
+  // type check, so the assertion proves the 415 no longer fires without
+  // pushing a file into Cloudinary.
+  const { error } = await callUpload({
+    user: { id: 'x' },
+    file: {
+      buffer: Buffer.alloc(26 * 1024 * 1024),
+      mimetype: 'application/octet-stream',
+      originalname: 'notes.md',
+    },
+  });
+  assert.ok(error, 'the size bound should still stop it');
+  assert.equal(error.status, 413, `expected 413, got ${error.status}: ${error.message}`);
 });
 
 // --- The real round trip -----------------------------------------------------

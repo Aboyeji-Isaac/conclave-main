@@ -6,6 +6,7 @@ import PopoverMenu from '@/components/ui/PopoverMenu';
 import Spinner from '@/components/ui/Spinner';
 import { useToast } from '@/contexts/ToastContext';
 import { TASK_STATUSES, listTasks, updateTaskStatus } from '@/services/tasks.service';
+import Page from '@/components/layout/Page';
 
 const COLUMNS = [
   { status: 'open', label: 'To do' },
@@ -207,14 +208,14 @@ export default function Tasks() {
 
   if (error) {
     return (
-      <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-6 md:pt-9">
+      <Page width="board">
         <p role="alert" className="rounded-lg bg-error/10 p-4 text-body text-error">{error}</p>
-      </div>
+      </Page>
     );
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto bg-surface px-4 pt-6 md:pt-9">
+      <Page width="board">
       {tasks.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line">
           <EmptyState
@@ -250,6 +251,6 @@ export default function Tasks() {
           ))}
         </div>
       )}
-    </div>
+      </Page>
   );
 }

@@ -27,6 +27,11 @@ export default function PromoteToDecisionDialog({ open, onClose, message, roomId
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Opened from the attach menu rather than from a message: there is no source
+  // message, so the body starts empty and the endpoint gets no sourceMessageId.
+  // Only the copy changes — the request is identical either way.
+  const manual = Boolean(message?.manual);
+
   // Reset whenever the dialog opens on a different message, so a cancelled
   // promotion cannot leave its draft sitting in the next one.
   useEffect(() => {
@@ -57,7 +62,7 @@ export default function PromoteToDecisionDialog({ open, onClose, message, roomId
       onPromoted?.(decision);
       onClose();
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not promote this message.');
+      setError(err.response?.data?.message || (manual ? 'Could not create this decision.' : 'Could not promote this message.'));
     } finally {
       setIsSaving(false);
     }
@@ -67,14 +72,14 @@ export default function PromoteToDecisionDialog({ open, onClose, message, roomId
     <Modal
       open={open}
       onClose={onClose}
-      title="Promote to decision"
+      title={manual ? 'New decision' : 'Promote to decision'}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} type="button">
             Cancel
           </Button>
           <Button variant="primary" type="submit" form="promote-form" disabled={!title.trim() || !body.trim() || isSaving}>
-            {isSaving ? 'Promoting…' : 'Promote'}
+            {isSaving ? (manual ? 'Saving…' : 'Promoting…') : manual ? 'Create decision' : 'Promote'}
           </Button>
         </>
       }

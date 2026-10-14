@@ -1,5 +1,8 @@
 const { query } = require('../config/db');
 const ApiError = require('../utils/ApiError');
+// Top-level rather than lazily: poll.service imports nothing from this module,
+// so unlike reaction.service there is no cycle to defer around.
+const { attachPolls } = require('./poll.service');
 
 // Message pins — the same two scopes and the same rules as decisionPin.service,
 // applied to messages. Deliberately a near-copy rather than a shared abstraction:
@@ -101,7 +104,7 @@ async function getMessageWithPins(messageId, viewerId) {
     throw new ApiError(404, 'Message not found');
   }
 
-  const [message] = await attachPins(result.rows, viewerId);
+  const [message] = await attachPolls(await attachPins(result.rows, viewerId));
   return message;
 }
 
@@ -234,7 +237,7 @@ async function listRoomPins(roomId, viewerId) {
   const { attachReactions } = require('./reaction.service');
   const messages = await attachReactions(result.rows, viewerId);
 
-  return attachPins(messages, viewerId);
+  return attachPolls(await attachPins(messages, viewerId));
 }
 
 module.exports = {

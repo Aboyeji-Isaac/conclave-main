@@ -1,180 +1,148 @@
 import { NavLink } from 'react-router-dom';
 import Avatar from '@/components/ui/Avatar';
 import Badge from '@/components/ui/Badge';
-import EmptyState from '@/components/ui/EmptyState';
 import Logo from '@/components/landing/Logo';
-import Spinner from '@/components/ui/Spinner';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChats } from '@/contexts/ChatsContext';
-import { useNotifications } from '@/contexts/NotificationsContext';
 import IconDecisions from '@/assets/icons/decisions.svg?react';
-import IconHash from '@/assets/icons/hash.svg?react';
 import IconHome from '@/assets/icons/home.svg?react';
-import IconInvite from '@/assets/icons/invite.svg?react';
-import IconLocked from '@/assets/icons/locked.svg?react';
-import IconMember from '@/assets/icons/member.svg?react';
-import IconNotify from '@/assets/icons/notify.svg?react';
 import IconRecent from '@/assets/icons/recent.svg?react';
 import IconSettings from '@/assets/icons/settings.svg?react';
 import IconSignOut from '@/assets/icons/sign-out.svg?react';
 import IconTasks from '@/assets/icons/tasks.svg?react';
-import IconThread from '@/assets/icons/thread.svg?react';
 
-// Design specifies Hash for public rooms and Lock for private. Nothing in the
-// board covers dm | group | department, so thread.svg stands in for those.
-function RoomIcon({ room }) {
-  if (room.type === 'dm') {
-    return <Avatar name={room.display_name} src={room.display_avatar} size="sm" />;
-  }
-  if (room.type === 'public') return <IconHash className="h-5 w-5 shrink-0" />;
-  if (room.type === 'private') return <IconLocked className="h-5 w-5 shrink-0" />;
-  return <IconThread className="h-5 w-5 shrink-0" />;
-}
-
-// Row pill is 36px (h-9); pitch is set by each nav's gap — 44px for the
-// workspace nav, 42px for the rooms. The active highlight is 196px wide at a
-// 220px sidebar (220 − 12 margin each side).
-//
-// `shrink-0` is load-bearing. Every one of these rows is a flex item in a
-// column, so the default `flex-shrink: 1` lets them compress below `h-9` when
-// the rail is short — and a compressed row is a row whose click target is
-// smaller than the 36px it advertises. Measured at a 640px-tall window the
-// second room row was 20px instead of 36px, and at 600px it overlapped the
-// profile block outright.
-//
-// The rail scrolls as one column rather than only its rooms list. The fixed
-// parts — logo, workspace nav, footer — total about 550px, so on a short window
-// *something* has to give. Scrolling the whole rail keeps every destination
-// reachable; letting the rooms list absorb the shortfall instead collapsed it
-// to zero height below ~600px, which made rooms unreachable altogether.
-const rowClass = ({ isActive }) =>
-  `mx-3 flex h-9 shrink-0 items-center gap-3 rounded-lg pl-3 text-body transition-colors ${
-    isActive ? 'bg-brand-soft text-brand' : 'text-ink hover:bg-canvas'
-  }`;
-
-// recent.svg (a clock) for Digest rather than the bell Notifications uses: two
-// rail entries with the same glyph read as one entry twice, and the digest is
-// "what happened while you were away" — a time window, not an alert.
 const primaryNav = [
-  { to: '/chats', label: 'Chats', Icon: IconHome, end: true },
-  { to: '/decisions', label: 'Decisions', Icon: IconDecisions },
+  { to: '/chats', label: 'Chats', Icon: IconHome, end: false },
   { to: '/tasks', label: 'Tasks', Icon: IconTasks },
-  { to: '/digest', label: 'Digest', Icon: IconRecent },
-  { to: '/notifications', label: 'Notifications', Icon: IconNotify },
+  { to: '/decisions', label: 'Decisions', Icon: IconDecisions },
+  { to: '/digest', label: 'Catch up', Icon: IconRecent },
 ];
 
+const itemBase =
+  'mx-3 flex h-10 shrink-0 items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30';
+
+function RailItem({ to, end, label, Icon, badge = 0, collapsed, onNavigate }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      onClick={onNavigate}
+      title={collapsed ? label : undefined}
+      aria-label={collapsed ? label : undefined}
+      className={({ isActive }) =>
+        `${itemBase} ${collapsed ? 'justify-center' : 'gap-3 px-3'} ${
+          isActive ? 'bg-brand-soft text-brand' : 'text-ink hover:bg-canvas'
+        }`
+      }
+    >
+      <span className="relative shrink-0">
+        <Icon className="h-5 w-5" aria-hidden="true" />
+        {collapsed && badge > 0 && (
+          <span
+            className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-brand ring-2 ring-surface"
+            aria-hidden="true"
+          />
+        )}
+      </span>
+      {!collapsed && <span className="min-w-0 flex-1 truncate text-body">{label}</span>}
+      {!collapsed && badge > 0 && <Badge tone="brand">{badge}</Badge>}
+    </NavLink>
+  );
+}
+
 /**
- * The primary rail, `md` and up.
+ * The primary rail.
  *
- * Every in-app route is reachable from here. That is deliberate: the previous
- * version shipped a link to `/dms` with no matching route and left `/digest`
- * with no entry point at all, so a user could be told a feature exists in the
- * API docs and have no way to reach it in the product.
+ * Collapsed (a 72px icon column) or expanded (labels). Rooms are not listed
+ * here: the chat list is the only place they appear, so the screen never shows
+ * the same list twice.
  *
- * "Invite members" points at `/new` rather than `/settings`. The new-chat
- * screen is where a person is actually found and a conversation started, and
- * there is no invite flow to send someone to — so linking the label at
- * settings would have put a dead end behind the most prominent secondary item.
- *
+ * @param {boolean} [collapsed]
  * @param {() => void} [onNavigate] - closes the mobile drawer after a click
  */
-export default function NavRail({ onNavigate }) {
+export default function NavRail({ collapsed = false, onNavigate }) {
   const { user, logout } = useAuth();
-  const { rooms, isLoading, error, unreadTotal } = useChats();
-  const { unreadCount } = useNotifications();
+  const { unreadTotal } = useChats();
   const displayName = user?.display_name || 'Unknown user';
 
-  // Closing the drawer matters as much as signing out: on mobile the rail is
-  // an overlay, and leaving it open over a signed-out login screen is worse
-  // than not signing out at all.
-  function onSignOut() {
+  // Closing the drawer matters as much as signing out: an overlay left open
+  // over a signed-out login screen is worse than not signing out.
+  const onSignOut = () => {
     onNavigate?.();
     logout();
-  }
+  };
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto pb-4 pt-6">
-      <NavLink to="/chats" onClick={onNavigate} className="px-6" aria-label="Conclave, home">
-        <Logo />
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain py-4">
+      <NavLink
+        to="/chats"
+        onClick={onNavigate}
+        aria-label="Conclave, home"
+        className={`mb-6 flex shrink-0 items-center ${collapsed ? 'justify-center' : 'px-6'}`}
+      >
+        {collapsed ? (
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand text-h2 text-surface">
+            C
+          </span>
+        ) : (
+          <Logo />
+        )}
       </NavLink>
 
-      <p className="mt-10 shrink-0 px-6 text-label uppercase text-muted">Workspace</p>
-      <nav className="mt-6 flex shrink-0 flex-col gap-2">
-        {primaryNav.map(({ to, label, Icon, end }) => (
-          <NavLink key={to} end={end} to={to} onClick={onNavigate} className={rowClass}>
-            <Icon className="h-5 w-5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">{label}</span>
-            {/* The same two counts the Navbar badge shows, so the rail and the
-                bell never disagree about what is unread. */}
-            {to === '/chats' && unreadTotal > 0 && <Badge tone="brand">{unreadTotal}</Badge>}
-            {to === '/notifications' && unreadCount > 0 && (
-              <Badge tone="brand">{unreadCount}</Badge>
-            )}
-          </NavLink>
+      <nav aria-label="Workspace" className="flex flex-col gap-1.5">
+        {primaryNav.map((item) => (
+          <RailItem
+            key={item.to}
+            {...item}
+            badge={item.to === '/chats' ? unreadTotal : 0}
+            collapsed={collapsed}
+            onNavigate={onNavigate}
+          />
         ))}
       </nav>
 
-      <p className="mt-10 shrink-0 px-6 text-label uppercase text-muted">Rooms</p>
-      <nav className="mt-3 flex flex-col gap-1.5">
-        {isLoading && <Spinner label="Loading rooms" />}
-        {error && <p className="mx-3 text-metadata text-error">{error}</p>}
-        {!isLoading && !error && rooms.length === 0 && (
-          <EmptyState title="No rooms yet" description="Rooms you join will appear here." />
-        )}
-        {rooms.map((room) => (
-          <NavLink key={room.id} to={`/chats/${room.id}`} onClick={onNavigate} className={rowClass}>
-            <RoomIcon room={room} />
-            <span className="min-w-0 flex-1 truncate">{room.display_name || room.name}</span>
-            {room.unread_count > 0 && <Badge tone="brand">{room.unread_count}</Badge>}
-          </NavLink>
-        ))}
-      </nav>
+      <div className="mt-auto shrink-0 pt-4">
+        <div className="mx-3 mb-3 border-t border-line" />
 
-      <div className="mt-4 shrink-0">
-        <div className="mx-3 border-t border-line" />
-
-        <NavLink to="/profile" onClick={onNavigate} className="mt-5 flex items-center gap-3 px-6">
-          <Avatar name={displayName} src={user?.avatar_url} className="shrink-0" />
-          <span className="flex min-w-0 flex-col gap-1">
-            <span className="truncate text-label text-ink">{displayName}</span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2 w-2 shrink-0 rounded-full bg-success" aria-hidden="true" />
-              <span className="text-metadata text-muted">Available</span>
-            </span>
-          </span>
-        </NavLink>
-
-        <NavLink
-          to="/new"
-          onClick={onNavigate}
-          className="mx-3 mt-4 flex h-9 items-center gap-3 rounded-lg pl-3 text-body text-ink transition-colors hover:bg-canvas"
-        >
-          <IconInvite className="h-5 w-5 shrink-0" />
-          Invite members
-        </NavLink>
-
-        <NavLink
+        <RailItem
           to="/settings"
+          label="Settings"
+          Icon={IconSettings}
+          collapsed={collapsed}
+          onNavigate={onNavigate}
+        />
+
+        <NavLink
+          to="/profile"
           onClick={onNavigate}
-          className="mx-3 mt-1 flex h-9 items-center gap-3 rounded-lg pl-3 text-body text-ink transition-colors hover:bg-canvas"
+          title={collapsed ? displayName : undefined}
+          aria-label={collapsed ? `Profile, ${displayName}` : undefined}
+          className={({ isActive }) =>
+            `mx-3 mt-1.5 flex h-12 shrink-0 items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 ${
+              collapsed ? 'justify-center' : 'gap-3 px-3'
+            } ${isActive ? 'bg-brand-soft' : 'hover:bg-canvas'}`
+          }
         >
-          <IconSettings className="h-5 w-5 shrink-0" />
-          Settings
+          <Avatar name={displayName} src={user?.avatar_url} size="sm" />
+          {!collapsed && (
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-label text-ink">{displayName}</span>
+              <span className="mt-1 block text-metadata text-muted">View profile</span>
+            </span>
+          )}
         </NavLink>
 
-        {/*
-          Logout lives here rather than only on Profile because it is the one
-          footer action everybody needs and almost nobody goes looking for —
-          Profile is a form, and signing out from the bottom of a form is a
-          strange place to look for it.
-        */}
         <button
           type="button"
           onClick={onSignOut}
-          className="mx-3 mt-1 flex h-9 w-full items-center gap-3 rounded-lg pl-3 text-body text-ink transition-colors hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
+          title={collapsed ? 'Log out' : undefined}
+          aria-label={collapsed ? 'Log out' : undefined}
+          className={`${itemBase} mt-1.5 w-[calc(100%-1.5rem)] text-ink hover:bg-canvas ${
+            collapsed ? 'justify-center' : 'gap-3 px-3'
+          }`}
         >
-          <IconSignOut className="h-5 w-5 shrink-0" />
-          Log out
+          <IconSignOut className="h-5 w-5 shrink-0" aria-hidden="true" />
+          {!collapsed && <span className="text-body">Log out</span>}
         </button>
       </div>
     </div>

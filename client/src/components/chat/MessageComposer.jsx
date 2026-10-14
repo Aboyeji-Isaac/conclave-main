@@ -3,7 +3,10 @@ import IconClose from '@/assets/icons/close.svg?react';
 import IconMention from '@/assets/icons/mention.svg?react';
 import IconSend from '@/assets/icons/send.svg?react';
 import { uploadFile } from '@/services/messages.service';
-import AttachmentPicker, { MAX_ATTACHMENTS, MAX_UPLOAD_BYTES } from './AttachmentPicker';
+import { rememberUploadedFile } from '@/services/attachments.service';
+import { isAccepted, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES } from '@/lib/media';
+import AttachmentPicker from './AttachmentPicker';
+import AttachmentPreviewDialog from './AttachmentPreviewDialog';
 import MentionPicker from './MentionPicker';
 
 const MAX_LINES = 5;
@@ -26,10 +29,11 @@ const MAX_LINES = 5;
  * the two are independent from that point — renaming the person later does not
  * rewrite history.
  *
- * It must not fake uploads. A file is uploaded the moment it is picked, before
- * the message is sent, so a failed upload is visible while the text is still
- * editable. Pretending a file is attached until send and then discovering the
- * 25MB limit loses the message along with the file.
+ * Files are picked into a full-screen preview and only uploaded when Send is
+ * pressed there, so the bytes are never on their way to storage before the user
+ * has decided to send. A failed upload keeps the preview open with the files,
+ * the caption and the reason intact — the text must survive the failure, which
+ * is the one thing the earlier upload-on-pick design was right to insist on.
  *
  * @param {boolean} disabled - no realtime connection
  * @param {(payload: object) => void} onSend
@@ -37,6 +41,9 @@ const MAX_LINES = 5;
  * @param {() => void} onTyping - emits a typing event, throttled by the caller
  * @param {object|null} replyTo - message being replied to
  * @param {() => void} onCancelReply
+ * @param {() => void} [onCreatePoll] - opens the poll dialog when supplied
+ * @param {() => void} [onCreateDecision] - opens the decision dialog when supplied
+ * @param {() => void} [onCreateTask] - opens the task dialog when supplied
  */
 export default function MessageComposer({
   disabled,
@@ -45,18 +52,25 @@ export default function MessageComposer({
   onTyping,
   replyTo,
   onCancelReply,
+  onCreatePoll,
+  onCreateDecision,
+  onCreateTask,
   // The room pane is a grid and addresses its rows explicitly, so the composer
   // needs to accept the placement the parent decides rather than hardcoding one.
   className = '',
 }) {
   const [content, setContent] = useState('');
   const [error, setError] = useState('');
-  const [attachments, setAttachments] = useState([]);
+  const [pendingFiles, setPendingFiles] = useState([]);
+  const [sending, setSending] = useState(false);
   const [mentionQuery, setMentionQuery] = useState(null);
   const [mentionedIds, setMentionedIds] = useState([]);
 
   const textareaRef = useRef(null);
   const typingTimer = useRef(null);
+  // Bumped when the preview is abandoned so an upload still in flight knows its
+  // result is no longer wanted and must not touch state that has moved on.
+  const sendToken = useRef(0);
 
   // Auto-grow. Reset to auto first so shrinking works, then clamp at five
   // lines — beyond that the box scrolls rather than eating the timeline.
@@ -138,51 +152,148 @@ export default function MessageComposer({
     });
   };
 
-  const handleFiles = async (files) => {
-    setError('');
-    const room = MAX_ATTACHMENTS - attachments.length;
-    if (room <= 0) {
-      setError(`A message can hold at most ${MAX_ATTACHMENTS} files.`);
-      return;
-    }
+  /**
+   * Accept the picked files into the preview, or explain why none of them fit.
+   *
+   * The type check runs here rather than waiting for the server's 415 so the
+   * message can name the file: a rejection after a multi-second round trip says
+   * only what the server decided, and the browser's own `accept` filter is not
+   * enough on its own because it does not run when a file arrives by any other
+   * path.
+   *
+   * The preview only ever opens with a non-empty list — if nothing survived,
+   * the composer stays put and says so, rather than presenting an empty modal.
+   *
+   * @param {File[]} files
+   */
+  const handleFiles = (files) => {
+    const rejected = [];
+    const accepted = [];
 
-    const accepted = files.slice(0, room);
-    if (files.length > room) {
-      setError(`Only ${room} more file${room === 1 ? '' : 's'} fit in this message.`);
-    }
-
-    for (const file of accepted) {
+    for (const file of files) {
       if (file.size > MAX_UPLOAD_BYTES) {
-        setError(`"${file.name}" is larger than the 25MB limit.`);
-        continue;
+        rejected.push(`"${file.name}" is larger than the 25MB limit.`);
+      } else if (!isAccepted(file.type, file.name)) {
+        rejected.push(`"${file.name}" is not a file type this app can store.`);
+      } else {
+        accepted.push(file);
       }
-      const localId = `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setAttachments((prev) => [
-        ...prev,
-        { localId, filename: file.name, size: file.size, uploading: true },
-      ]);
+    }
 
-      try {
-        const stored = await uploadFile(file);
-        setAttachments((prev) =>
-          prev.map((item) =>
-            item.localId === localId ? { ...item, ...stored, uploading: false } : item,
-          ),
-        );
-      } catch (err) {
-        setAttachments((prev) => prev.filter((item) => item.localId !== localId));
-        setError(err.response?.data?.message || `Could not upload "${file.name}".`);
-      }
+    if (accepted.length > MAX_ATTACHMENTS) {
+      rejected.push(
+        `A message can hold at most ${MAX_ATTACHMENTS} files; the extra ${
+          accepted.length - MAX_ATTACHMENTS
+        } were not added.`,
+      );
+      accepted.length = MAX_ATTACHMENTS;
+    }
+
+    const note = rejected.join(' ');
+    setError(note);
+
+    if (accepted.length > 0) {
+      setPendingFiles(accepted);
     }
   };
 
-  const removeAttachment = (localId) => {
-    setAttachments((prev) => prev.filter((item) => item.localId !== localId));
+  const removeFile = (index) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+    // The remaining files stay, so a leftover rejection note about the file
+    // that is no longer there would be actively misleading.
+    setError('');
+  };
+
+  // Backing out of the preview discards the picked files and any caption typed
+  // into it, and leaves the composer untouched — the draft was only ever read
+  // from it, never moved out of it, so cancelling cannot lose text.
+  const cancelPreview = () => {
+    sendToken.current += 1;
+    setSending(false);
+    setPendingFiles([]);
+    setError('');
+  };
+
+  /**
+   * Upload every pending file, then send the message they belong to.
+   *
+   * Sequential rather than parallel: an error has to name a file, and with
+   * requests in flight at once the one that failed is not knowable. Ten files
+   * is the ceiling, and each is a single small request.
+   *
+   * On failure nothing is cleared. The preview stays open with the files, the
+   * caption and the reason, so the retry costs one press and no typing — losing
+   * the message along with the file is the outcome this whole flow exists to
+   * avoid.
+   *
+   * @param {string} caption - what the user typed in the preview
+   */
+  const submitPreview = async (caption) => {
+    if (sending || pendingFiles.length === 0) return;
+
+    const token = ++sendToken.current;
+    setSending(true);
+    setError('');
+
+    let attachments;
+    try {
+      attachments = [];
+      for (const file of pendingFiles) {
+        const stored = await uploadFile(file);
+        if (sendToken.current !== token) return;
+        // Now, rather than when the message renders: at this instant the file
+        // has bytes and a URL and the message that will name it does not exist
+        // yet, and the URL is the cache key. This is the sender's half of the
+        // store — the receiver's half is the first open of the image.
+        await rememberUploadedFile(stored.url, file);
+        attachments.push({ url: stored.url });
+      }
+    } catch (err) {
+      if (sendToken.current !== token) return;
+      // The reason first — a server says something useful, a dropped connection
+      // does not, and axios's own "Network Error" explains nothing to the
+      // person reading it. The second half is the part that matters: it says
+      // out loud what the open preview already proves, so a failure does not
+      // look like a lost message.
+      const reason =
+        err?.response?.data?.message ||
+        (err?.code === 'ERR_NETWORK' || err?.message === 'Network Error'
+          ? 'Could not reach the server.'
+          : err?.message) ||
+        'Could not upload one of the files.';
+      const sentence = reason.endsWith('.') ? reason : `${reason}.`;
+      setSending(false);
+      setError(`${sentence} Nothing was sent — the files and caption are still here.`);
+      return;
+    }
+
+    try {
+      onSend({
+        content: caption.trim(),
+        replyToId: replyTo?.id,
+        attachments,
+        // Rebuilt from the caption rather than reused from the composer: the
+        // caption is editable here, so the ids have to follow the text that is
+        // actually going out — the same rule handleTextChange applies.
+        mentionedUserIds: members
+          .filter((person) => caption.includes(`@${person.display_name}`))
+          .map((person) => person.id),
+      });
+    } catch (err) {
+      if (sendToken.current !== token) return;
+      setSending(false);
+      setError(err?.message || 'Could not send this message.');
+      return;
+    }
+
+    if (sendToken.current !== token) return;
+    setSending(false);
+    setPendingFiles([]);
+    reset();
   };
 
   const reset = () => {
     setContent('');
-    setAttachments([]);
     setMentionedIds([]);
     setMentionQuery(null);
     onCancelReply?.();
@@ -191,20 +302,13 @@ export default function MessageComposer({
   const submit = (event) => {
     event?.preventDefault();
     const text = content.trim();
-    const uploaded = attachments.filter((item) => !item.uploading && item.url);
-
-    if (attachments.some((item) => item.uploading)) {
-      setError('Wait for the upload to finish.');
-      return;
-    }
-    if (!text && uploaded.length === 0) return;
-    if (disabled) return;
+    if (!text || disabled) return;
 
     try {
       onSend({
         content: text,
         replyToId: replyTo?.id,
-        attachments: uploaded.map((item) => ({ url: item.url })),
+        attachments: [],
         mentionedUserIds: mentionedIds,
       });
       reset();
@@ -225,7 +329,10 @@ export default function MessageComposer({
   };
 
   return (
-    <form onSubmit={submit} className={`relative shrink-0 bg-surface px-4 pb-6 pt-2 ${className}`}>
+    <form
+      onSubmit={submit}
+      className={`relative mx-auto w-full max-w-3xl shrink-0 bg-surface px-4 pb-6 pt-2 ${className}`}
+    >
       {replyTo && (
         <div className="mb-2 flex items-center gap-3 rounded-lg border-l-2 border-brand bg-canvas px-3 py-2">
           <div className="min-w-0 flex-1">
@@ -245,33 +352,15 @@ export default function MessageComposer({
         </div>
       )}
 
-      {attachments.length > 0 && (
-        <ul className="mb-2 flex flex-col gap-1.5">
-          {attachments.map((item) => (
-            <li
-              key={item.localId}
-              className="flex items-center gap-2 rounded-lg border border-line bg-canvas px-3 py-2"
-            >
-              <span className="min-w-0 flex-1 truncate text-body text-ink">{item.filename}</span>
-              <span className="shrink-0 text-metadata text-muted">
-                {item.uploading ? 'Uploading…' : 'Ready'}
-              </span>
-              <button
-                type="button"
-                onClick={() => removeAttachment(item.localId)}
-                aria-label={`Remove ${item.filename}`}
-                className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:text-error"
-              >
-                <IconClose className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
       <div className="relative flex items-end gap-2 rounded-lg border border-line bg-surface px-3 py-2 focus-within:border-brand focus-within:ring-2 focus-within:ring-brand/10">
         <div className="flex shrink-0 gap-1 pb-1">
-          <AttachmentPicker onFiles={handleFiles} disabled={disabled} />
+          <AttachmentPicker
+            onFiles={handleFiles}
+            disabled={disabled}
+            onPoll={onCreatePoll}
+            onDecision={onCreateDecision}
+            onTask={onCreateTask}
+          />
           <button
             type="button"
             disabled={disabled}
@@ -324,7 +413,7 @@ export default function MessageComposer({
 
         <button
           type="submit"
-          disabled={disabled || (!content.trim() && attachments.length === 0)}
+          disabled={disabled || !content.trim()}
           aria-label="Send message"
           className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand pb-0.5 text-surface transition-opacity disabled:opacity-40"
         >
@@ -341,11 +430,22 @@ export default function MessageComposer({
         )}
       </div>
 
-      {error && (
+      {error && pendingFiles.length === 0 && (
         <p role="alert" className="mt-2 px-1 text-metadata text-error">
           {error}
         </p>
       )}
+
+      <AttachmentPreviewDialog
+        open={pendingFiles.length > 0}
+        files={pendingFiles}
+        initialCaption={content}
+        sending={sending}
+        error={error}
+        onSend={submitPreview}
+        onCancel={cancelPreview}
+        onRemoveFile={removeFile}
+      />
     </form>
   );
 }

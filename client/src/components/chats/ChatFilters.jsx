@@ -1,4 +1,5 @@
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import IconCompose from '@/assets/icons/compose.svg?react';
 import IconSearch from '@/assets/icons/search.svg?react';
 
 /**
@@ -12,10 +13,15 @@ import IconSearch from '@/assets/icons/search.svg?react';
  * competing answers to "what am I looking at", and the list could render
  * unread rows while the sidebar highlighted DMs.
  *
- * The search field is `?q=` on the same URL, and is shown below `md` only.
- * Above that the header carries the same field; two inputs bound to one
- * parameter is two controls, but two pieces of independent search state would
- * be two different answers to the same question.
+ * Both the filter and the search update the parameters in place rather than
+ * navigating: navigating rebuilt the URL from scratch, which dropped `?q=` on
+ * every chip press and threw away the open room, so filtering by Unread
+ * silently discarded the search being typed alongside it.
+ *
+ * The search field is `?q=` on the same URL. It lives here, next to the list it
+ * filters and the chips that narrow it, at every width — the header used to
+ * carry a second copy for `md` and up, and two inputs bound to one parameter
+ * meant two controls answering one question.
  *
  * Search matches room name only. Message search is a different endpoint —
  * `GET /messages/room/:roomId/search` — and it is scoped to a room you are
@@ -28,7 +34,6 @@ import IconSearch from '@/assets/icons/search.svg?react';
  */
 export default function ChatFilters() {
   const [params, setParams] = useSearchParams();
-  const navigate = useNavigate();
 
   const active = params.get('filter') || '';
   const query = params.get('q') || '';
@@ -40,6 +45,13 @@ export default function ChatFilters() {
     setParams(next, { replace: true });
   };
 
+  const selectFilter = (value) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set('filter', value);
+    else next.delete('filter');
+    setParams(next, { replace: true });
+  };
+
   const FILTERS = [
     { value: '', label: 'All' },
     { value: 'unread', label: 'Unread' },
@@ -48,23 +60,34 @@ export default function ChatFilters() {
   ];
 
   return (
-    <div className="sticky top-0 z-10 border-b border-line bg-surface px-3 pb-3 pt-4">
-      <label className="relative block md:hidden">
-        <span className="sr-only">Search chats</span>
-        <IconSearch
-          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
-          aria-hidden="true"
-        />
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search chats"
-          className="min-h-10 w-full rounded-lg border border-line bg-canvas pl-9 pr-3 text-body text-ink outline-none transition-shadow placeholder:text-muted/70 focus:border-brand focus:ring-2 focus:ring-brand/15"
-        />
-      </label>
+    <div className="sticky top-0 z-10 border-b border-line bg-surface px-3 pb-3 pt-3">
+      <div className="flex items-center gap-2">
+        <label className="relative block min-w-0 flex-1">
+          <span className="sr-only">Search chats</span>
+          <IconSearch
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
+            aria-hidden="true"
+          />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search chats"
+            className="min-h-10 w-full rounded-lg border border-line bg-canvas pl-9 pr-3 text-body text-ink outline-none transition-shadow placeholder:text-muted/70 focus:border-brand focus:ring-2 focus:ring-brand/15"
+          />
+        </label>
 
-      <div className="flex gap-1.5 overflow-x-auto">
+        <Link
+          to="/new"
+          aria-label="New chat"
+          title="New chat"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-brand text-surface transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30"
+        >
+          <IconCompose className="h-5 w-5" aria-hidden="true" />
+        </Link>
+      </div>
+
+      <div className="scrollbar-none mt-3 flex gap-1.5 overflow-x-auto">
         {FILTERS.map((filter) => {
           const selected = filter.value === active;
           return (
@@ -72,11 +95,9 @@ export default function ChatFilters() {
               key={filter.value || 'all'}
               type="button"
               aria-pressed={selected}
-              onClick={() => navigate(filter.value ? `/chats?filter=${filter.value}` : '/chats')}
+              onClick={() => selectFilter(filter.value)}
               className={`min-h-8 shrink-0 rounded-full px-3 text-label transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 ${
-                selected
-                  ? 'bg-brand font-semibold text-surface'
-                  : 'bg-canvas text-muted hover:text-ink'
+                selected ? 'bg-brand font-semibold text-surface' : 'bg-canvas text-muted hover:text-ink'
               }`}
             >
               {filter.label}

@@ -125,8 +125,16 @@ export default function useMessages(roomId, roomMembers = []) {
         let next = current;
         // Withdraw the optimistic row this one is the acknowledgement of.
         if (message.sender_id === viewerId) {
+          // A file-only message is `''` locally and `null` from the server, so
+          // the two never matched and every attachment-only send left a stuck
+          // "pending" copy next to the real one. Counting attachments as well
+          // stops a text message from stealing an acknowledgement that belongs
+          // to a different pending row with the same words.
           const index = current.findIndex(
-            (item) => item._optimistic && item.content === message.content,
+            (item) =>
+              item._optimistic &&
+              (item.content || '') === (message.content || '') &&
+              (item.attachments?.length || 0) === (message.attachments?.length || 0),
           );
           if (index !== -1) {
             const withdrawn = current[index];
@@ -158,6 +166,16 @@ export default function useMessages(roomId, roomMembers = []) {
     };
 
     const onPinChanged = ({ message }) => replaceMessage(message);
+
+    // Only the poll is replaced, so this viewer's own reaction and pin flags on
+    // the message are left alone — which is the whole reason `poll:updated`
+    // does not ship the message alongside it.
+    const onPollUpdated = ({ messageId, roomId: eventRoom, poll }) => {
+      if (eventRoom !== roomId) return;
+      setMessages((current) =>
+        current.map((item) => (item.id === messageId ? { ...item, poll } : item)),
+      );
+    };
 
     const onTyping = ({ roomId: eventRoom, userId }) => {
       if (eventRoom !== roomId || userId === viewerId) return;
@@ -225,6 +243,7 @@ export default function useMessages(roomId, roomMembers = []) {
     // below update without a refetch.
     socket.on('message:pinned', onPinChanged);
     socket.on('message:unpinned', onPinChanged);
+    socket.on('poll:updated', onPollUpdated);
     socket.on('typing', onTyping);
     socket.on('stop-typing', onStopTyping);
     socket.on('room-typing', onRoomTyping);
@@ -244,6 +263,7 @@ export default function useMessages(roomId, roomMembers = []) {
       socket.off('message:reaction', replaceMessage);
       socket.off('message:pinned', onPinChanged);
       socket.off('message:unpinned', onPinChanged);
+      socket.off('poll:updated', onPollUpdated);
       socket.off('typing', onTyping);
       socket.off('stop-typing', onStopTyping);
       socket.off('room-typing', onRoomTyping);

@@ -30,6 +30,11 @@ export default function FlagAsTaskDialog({ open, onClose, message, roomId, membe
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Opened from the attach menu rather than from a message: no source message,
+  // no prefilled title, so the title field is the only thing that must be
+  // filled before the request can go out.
+  const manual = Boolean(message?.manual);
+
   const candidates = useMemo(
     () => members.filter((member) => member.id && member.display_name),
     [members],
@@ -75,7 +80,7 @@ export default function FlagAsTaskDialog({ open, onClose, message, roomId, membe
     <Modal
       open={open}
       onClose={onClose}
-      title="Flag as task"
+      title={manual ? 'New task' : 'Flag as task'}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} type="button">
